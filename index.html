@@ -25,20 +25,6 @@
     #loading { left: 0; right: 0; text-align: center; top: 45%; font-size: 42px; }
     #crash { left: 0; right: 0; text-align: center; top: 40%; font-size: 36px; display: none; }
 
-    /* Score panel, top-right — small: score + rings */
-    #scorebar {
-      position: fixed; right: 12px; top: 12px;
-      display: none; align-items: center; gap: 11px;
-      padding: 6px 12px; border-radius: 10px;
-      background: rgba(0, 12, 4, .45); backdrop-filter: blur(6px);
-      border: 1px solid var(--hud);
-      color: var(--hud); text-shadow: 0 0 3px var(--hud-glow), 0 1px 2px rgba(0, 0, 0, .6);
-      font-family: 'Roboto', system-ui, sans-serif;
-    }
-    #scorebar .val { font-size: 15px; font-weight: 700; line-height: 1; }
-    #scorebar .label { font-size: 8px; letter-spacing: .1em; text-transform: uppercase; opacity: .7; margin-top: 2px; }
-    #scorebar .divider { width: 1px; height: 20px; background: var(--hud); opacity: .5; }
-
     /* F-15 style HUD symbology colour — phosphor green, with a faint glow. */
     :root { --hud: #3dff5c; --hud-glow: rgba(61, 255, 92, .45); }
 
@@ -64,19 +50,12 @@
       filter: drop-shadow(0 0 2px var(--hud-glow));
     }
 
-    /* transient "+5 / +10" popup */
+    /* transient message popup (e.g. a respawn notice) */
     #pop {
       position: fixed; left: 50%; top: 88px; transform: translateX(-50%);
       font-size: 40px; font-weight: 800; color: var(--hud); opacity: 0;
       text-shadow: 0 2px 8px rgba(0, 0, 0, .6); pointer-events: none;
       transition: opacity .15s ease-out;
-    }
-
-    /* Target designator: HUD brackets around the next ring(s) to fly through */
-    #designator {
-      position: fixed; inset: 0; width: 100%; height: 100%;
-      display: none; pointer-events: none; z-index: 4;
-      filter: drop-shadow(0 0 2px var(--hud-glow));
     }
 
     /* Attitude symbology: W aircraft datum, flight path marker, horizon line
@@ -150,53 +129,6 @@
     #login button:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(57, 139, 250, .4); }
     #login button:active:not(:disabled) { background: #2E7BE0; transform: translateY(1px); }
     #login button:disabled { background: #2B3F5C; color: #9FB3CC; cursor: default; }
-    /* Region segmented control on the login card */
-    #login .label { display: block; font-size: 16px; color: #CDD5E1; margin-bottom: 8px; }
-    #login .seg { display: flex; gap: 10px; }
-    #login .segBtn {
-      flex: 1; height: 50px; margin: 0; padding: 0;
-      font-family: inherit; font-size: 16px; font-weight: 600; color: #CDD5E1;
-      background: #0F1724; border: 1px solid #3B485A; border-radius: 8px;
-      cursor: pointer; transition: background .15s, border-color .15s, color .15s;
-    }
-    #login .segBtn:hover { border-color: #55657b; }
-    #login .segBtn:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(57, 139, 250, .35); }
-    #login .segBtn.is-on { background: #16304f; border-color: #398BFA; color: #F4F7FC; }
-
-    /* Pause / finish dialogs — shown over a frozen simulator */
-    .modal {
-      position: fixed; inset: 0; z-index: 30; display: none;
-      align-items: center; justify-content: center; padding: 24px 16px;
-      box-sizing: border-box; background: rgba(6, 12, 22, .72);
-      font-family: 'Roboto', system-ui, sans-serif; direction: ltr;
-    }
-    .modal.is-open { display: flex; }
-    .modalCard {
-      width: 100%; max-width: 440px; box-sizing: border-box; padding: 28px;
-      background: #141E2D; border: 1px solid #303C4D; border-radius: 16px;
-      box-shadow: 0 24px 60px rgba(0, 0, 0, .5); color: #F4F7FC; text-align: left;
-    }
-    .modalCard h2 { margin: 0 0 10px; font-size: 24px; font-weight: 700; }
-    .modalInfo { margin: 0 0 18px; font-size: 15px; line-height: 1.55; color: #98A6B9; white-space: pre-line; }
-    .modalAsk { margin: 0 0 20px; font-size: 17px; color: #F4F7FC; }
-    .modalRow { display: flex; gap: 12px; }
-    /* Secondary row (the CSV export): same width, visually quieter. */
-    .modalRowCsv { margin-top: 10px; }
-    .modalRowCsv .btnGhost { height: 42px; font-size: 15px; font-weight: 500; }
-    .btnGhost:disabled { opacity: .4; cursor: default; }
-    .btnGhost:disabled:hover { border-color: #3B485A; color: #CDD5E1; }
-    .btnPrimary, .btnGhost {
-      flex: 1; height: 50px; font-family: inherit; font-size: 17px; font-weight: 600;
-      border-radius: 8px; cursor: pointer; transition: background .15s, transform .05s;
-    }
-    .btnPrimary { color: #fff; background: #398BFA; border: none; }
-    .btnPrimary:hover { background: #4C97FB; }
-    .btnPrimary:active { transform: translateY(1px); }
-    .btnGhost { color: #CDD5E1; background: transparent; border: 1px solid #3B485A; }
-    .btnGhost:hover { border-color: #55657b; color: #F4F7FC; }
-    .btnGhost:active { transform: translateY(1px); }
-    .btnPrimary:focus-visible, .btnGhost:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(57, 139, 250, .4); }
-
     @media (max-width: 560px) {
       #login .card { padding: 24px; }
       #login h1 { font-size: 30px; }
@@ -208,28 +140,10 @@
   <canvas id="threetiles" tabindex="0"></canvas>
 
   <div id="loading" class="text">Loading terrain… 0%</div>
-  <div id="crash" class="text">You crashed! Press E to continue (−30) or R to restart.</div>
-
-  <div id="scorebar">
-    <div>
-      <div class="val" id="scoreVal">0</div>
-      <div class="label">Score</div>
-    </div>
-    <div class="divider"></div>
-    <div>
-      <div class="val" id="ringsVal">0 / 0</div>
-      <div class="label">Rings</div>
-    </div>
-    <div class="divider"></div>
-    <div>
-      <div class="val" id="routeVal">1</div>
-      <div class="label">Route</div>
-    </div>
-  </div>
+  <div id="crash" class="text">You crashed! Press E to continue or R to restart.</div>
   <div id="pop"></div>
 
   <canvas id="compass"></canvas>
-  <canvas id="designator"></canvas>
 
   <canvas id="spdTape" class="tape"></canvas>
   <canvas id="altTape" class="tape"></canvas>
@@ -286,13 +200,6 @@
       <p class="sub">Enter participant details to begin</p>
       <div class="fields">
         <div class="field">
-          <span class="label" id="regionLabel">Region</span>
-          <div class="seg" role="radiogroup" aria-labelledby="regionLabel">
-            <button type="button" class="segBtn is-on" data-region="north" aria-checked="true" role="radio">North</button>
-            <button type="button" class="segBtn" data-region="south" aria-checked="false" role="radio">South</button>
-          </div>
-        </div>
-        <div class="field">
           <label for="fullName">Full name</label>
           <input id="fullName" name="fullName" type="text" required>
         </div>
@@ -304,30 +211,6 @@
       <div class="err" id="loginErr"></div>
       <button type="submit" disabled>Loading map… 0%</button>
     </form>
-  </div>
-
-  <div id="pause" class="modal">
-    <div class="modalCard">
-      <h2 id="pauseTitle">Route paused</h2>
-      <p class="modalAsk">Move on to the next route?</p>
-      <div class="modalRow">
-        <button type="button" id="pauseYes" class="btnPrimary">Yes</button>
-        <button type="button" id="pauseNo" class="btnGhost">No</button>
-      </div>
-      <div class="modalRow modalRowCsv">
-        <button type="button" id="pauseCsv" class="btnGhost">Download CSV</button>
-      </div>
-    </div>
-  </div>
-
-  <div id="finish" class="modal">
-    <div class="modalCard">
-      <h2>Session complete</h2>
-      <p class="modalInfo" id="finishInfo"></p>
-      <div class="modalRow">
-        <button type="button" id="downloadCsv" class="btnPrimary">Download CSV</button>
-      </div>
-    </div>
   </div>
 
   <script type="module" src="./demo/main.ts"></script>

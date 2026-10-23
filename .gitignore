@@ -4,3 +4,6 @@ dist-demo
 .idea
 .claude
 .DS_Store
+
+# editor backups made while working
+.backup

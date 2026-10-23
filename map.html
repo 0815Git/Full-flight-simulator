@@ -1,0 +1,1720 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Moving Map</title>
+  <link rel="icon" href="./assets/icon.png">
+  <style>
+    /* ══════════════════════════════════════════════════════════════════════
+       CONTROL SIZES — the knobs. Everything about how big the buttons are and
+       how far apart they sit is one of the numbers below; no size is written
+       anywhere else on this page. Change a number, save, and the map screen
+       picks it up on its next reload.
+
+       EVERY NUMBER IS THE SIZE ON SCREEN — paste Figma's width straight in.
+       Several of the PNGs carry a soft glow (transparent pixels around the
+       shape), which would otherwise eat into the size: a 64 px image with 6.5%
+       of padding a side draws a 56 px button. demo/map.ts measures that padding
+       and enlarges the image to compensate, so a button set to 64px measures
+       64px across its visible face, exactly as Figma reports it.
+       (To try a size without editing the file, open the map window's console
+       and type:  __ui('--btn-zoom-w', 64)  — see demo/map.ts.)
+
+       EACH BUTTON HAS A WIDTH AND A HEIGHT — the two numbers Figma shows.
+       Put both in and the button is exactly that size. Put `auto` in one of
+       them and that side follows the artwork's own proportions, so a single
+       number still scales the whole button: --btn-icon-w: 48px with
+       --btn-icon-h: auto gives a 48 x 48 disc without anyone working out the
+       height. Use `auto` when Figma's two numbers are the artwork's own ratio
+       anyway, and both numbers when they are not (the 2D / 3D switch is 64 x 86
+       in Figma, which is slightly taller than its PNG — so it gets both).
+       ══════════════════════════════════════════════════════════════════════ */
+    :root {
+      /*
+       * THE FRAME THE NUMBERS BELONG TO.
+       *
+       * A pixel in Figma and a pixel here are the same unit — but a size only
+       * means something next to the width it was drawn against. 64 px inside a
+       * 1920-wide frame is 3.3% of the screen; the same 64 px in a 1024-wide
+       * window is 6.3%, which is why a button pasted straight across looks
+       * about twice the size it does in the design.
+       *
+       * --ui-design-w is the width of the Figma frame these numbers were
+       * measured in — the frame itself, not a button inside it. This screen's
+       * frame is 2296 x 1280, so a button Figma calls 64 px covers 2.8% of the
+       * width, and that is what it covers here too, on any monitor.
+       *
+       * --ui-fit decides what the numbers below mean:
+       *   design  the whole set of controls is scaled by screen ÷ frame, so the
+       *           map screen is the design, at whatever size the window is.
+       *           A 64 px button is 64 px when the window is exactly the frame
+       *           width, and keeps its share of the screen everywhere else.
+       *   px      the numbers are taken literally, whatever the window size.
+       */
+      --ui-design-w: 2296;   /* the Figma frame for this screen… */
+      --ui-design-h: 1280;   /* …both sides of it. The scale is whichever of the
+                                two the window is tighter on, so the design keeps
+                                its proportions on a screen of any shape. */
+      --ui-fit: design;
+
+      /* ── THE CLOCK in the panel's first box ───────────────────────────
+         The panel's artwork carries 23 / 25 / 29 drawn into its first box;
+         those figures are covered and the real time is written in their place
+         — hours over minutes over seconds, as the design has them.
+
+         The numbers below are measured off the artwork itself, in design px:
+         the figures are 16.1 tall (so 22.6 of type), their middles sit 31.1
+         apart, and the box's inside is flat black, which is what the patch is
+         painted with. Sideways they are measured from the panel's left edge,
+         and the panel is stretched to the window, so demo/map.ts works those
+         out against the panel's real width. */
+      --clock-show: 1;              /* 0 leaves the artwork's own figures */
+      --clock-font: 'Assistant', system-ui, sans-serif;
+      --clock-size: 24.36px;        /* type size; Assistant's figures are 0.661
+                                       of it, which makes them the 16.1 the
+                                       artwork draws */
+      --clock-line: 31.1px;         /* from one line's middle to the next */
+      --clock-weight: 600;          /* semibold, as the design has it */
+      --clock-tracking: -1.25px;    /* the artwork's figures are a touch tighter
+                                       than the face sets them: two of them are
+                                       22.1 wide there, 24.6 as set */
+      --clock-color: rgb(from #FFFFFF r g b / 81%);
+      --clock-patch: #000000;       /* the box's own background */
+      --clock-patch-x: 10px;        /* the patch, from the panel's left edge */
+      --clock-patch-w: 85px;        /* its middle, 52.5, is where the figures
+                                       are drawn in the artwork */
+      --clock-patch-y: 16.8px;      /* …and from its top */
+      --clock-patch-h: 94px;
+
+      /* THE TOP PANEL's height, in design px. It spans the whole window
+         however wide that is, but its height is held to the design's 128 of
+         the frame's 1280 — so the screen under it always has the design's own
+         1152 to divide up, on a window of any shape. */
+      --toppanel-h: 128px;
+
+      /* Space between neighbouring buttons, measured between what you can
+         actually see (the transparent glow in the artwork is discounted). */
+      --btn-gap: 5px;
+      /* Distance from the map's own edges to the nearest button. */
+      --btn-edge: 14px;
+      /* WHERE A BUTTON ENDS AND ITS SHADOW BEGINS. Some of the artwork carries
+         a soft drop shadow and some does not, and a shadow is transparent — so
+         unless the two are told apart, the shadowed buttons sit further in than
+         the flat ones and the gaps above read unevenly. A pixel counts as the
+         button itself when it is at least this share of the artwork's own
+         strongest pixel; anything fainter is shadow, and is discounted.
+         50% is the plate. 4% takes the shadow in as well, which is how this
+         file read before. */
+      --btn-ink: 50%;
+      /* Space INSIDE the friends panel: between the friend list and the
+         targets bar under it, and so between the list and the targets list
+         once that bar is opened. */
+      --panel-gap: 8px;
+
+      /* ══ THE ROUTE on the map ═══════════════════════════════════════════
+         EVERY size and EVERY colour the route is drawn with lives here, and
+         nowhere else. Change a value, save, and the map redraws — no build.
+
+         ── THE THREE KINDS OF VALUE IN THIS BLOCK ───────────────────────
+
+         A SIZE, written `30px`: the number you would read off the 2296×1280
+         frame in Figma. The map multiplies it by the screen's own scale, so
+         30px keeps the same size relative to everything else on any screen.
+         Raising the number always makes that one thing bigger or thicker.
+
+         A SHARE, written `0.42` or `50%`: not a size of its own, but a
+         fraction of something else, named in the comment beside it. 0.5 is
+         half of that thing, 1 is all of it, 2 is twice it, and a minus sign
+         turns the direction round.
+
+         A COLOUR. Figma gives you two things — a hex, say 343B42, and an
+         opacity, say 68%. Write them exactly as they are:
+
+             rgb(from #343B42 r g b / 68%)
+                      ↑ hex from Figma     ↑ opacity from Figma
+
+         Nothing in there needs working out: `from #343B42 r g b` means "take
+         that hex as it is", and what follows the slash is how opaque it is —
+         100% solid, 0% invisible. Three other spellings mean the same and are
+         just as good: `#343B42` on its own (fully opaque), `#343B42AD` (the
+         hex with an opacity byte on the end), and the older
+         `rgba(52, 59, 66, .68)`, whose first three numbers are red, green and
+         blue out of 255 and whose last is the opacity as a fraction — .68
+         being 68%. `transparent` is a colour too: nothing is drawn at all.
+
+         Four of the colour knobs also take the word `auto` instead of a
+         colour, meaning "take the colour of the stretch you are on" — blue
+         ahead of the aircraft, grey-blue behind it.
+
+         And the --route-show-* knobs are switches: 1 draws it, 0 hides it.
+
+         This is the whole drawing, named piece by piece:
+
+                              ╭───────╮   ← the RING   (--route-marker…)
+             the LINE ────────┤   ●   ├──────           ● the DOT (--route-dot…)
+           (--route-…)        ╰───┬───╯      shade inside the ring:
+                                  │          --route-marker-fill
+                                  ╰── ( 2A )  ← the LABEL (--route-label…)
+
+         Each of the three — line, ring, label — is listed below in the order
+         you see it, with what happens when you raise the number. */
+
+      /* ── 1. THE LINE ──────────────────────────────────────────────────
+         Two colours on one line, parted exactly where the aircraft is: the
+         part already flown and the part still ahead. Under both of them runs
+         a dark casing, a touch wider, so the line reads over bright ground. */
+      --route-show-line: 1;           /* 0 hides the line (rings stay) */
+      --route-width: 5px;             /* thickness of the coloured line */
+      --route-casing: 2px;            /* the dark edge, on EACH side of it,
+                                         so the dark band is width + 2×this */
+      --route-color-ahead: #40A0FF;   /* the stretch still to be flown */
+      --route-color-flown: #5A899A;   /* the stretch already passed */
+      --route-color-casing: #001838;  /* that dark edge, line and rings alike */
+      /* A dashed route. 0 is solid. --route-dash is how long one stroke is,
+         --route-dash-gap the hole after it (0 = same as the stroke). */
+      --route-dash: 0px;
+      --route-dash-gap: 0px;
+      /* A shadow under the WHOLE route — line, rings and labels together.
+         --route-shadow is its blur in px; 0 switches it off. */
+      --route-shadow: 0px;
+      --route-shadow-color: rgb(from #000000 r g b / 50%);
+
+      /* ── 2. THE WAYPOINT: ring, shade, dot ────────────────────────────
+
+              --route-marker ────┐   measured across the ring's OUTER edge
+                              ╭──┴──╮
+                              │ ╭─╮ │  ← --route-marker-stroke
+                              │ │●│ │     (thickness of the ring's line;
+                              ╰─┴┬┴─╯      it grows INWARDS, so the outer
+                                 │         diameter never changes)
+                                 └── --route-dot  (the dot in the middle)
+
+         Inside the ring is a shade, --route-marker-fill, which darkens both
+         the ground and the piece of line crossing it. Your shade is black at
+         40%; write `auto` instead and it fills with the route's own colour. */
+      --route-show-ring: 1;           /* 0 hides rings and their shade */
+      --route-marker: 35px;           /* outer diameter of the ring */
+      --route-marker-stroke: 3px;     /* how thick the ring's line is */
+      --route-marker-casing: 2px;     /* its dark edge, each side */
+      --route-marker-color: auto;     /* `auto` = follow the route's colour,
+                                         or name one: #FFFFFF, #40A0FF… */
+      /* the shade inside the ring — yours is black at 40%. `transparent`
+         leaves the ground bare; `auto` fills it with the line's own colour. */
+      --route-marker-fill: rgb(from #000000 r g b / 40%);
+      --route-show-dot: 1;            /* 0 hides the centre dot */
+      --route-dot: 5px;               /* its diameter */
+      --route-dot-color: #40A0FF;     /* a colour, or `auto` */
+
+      /* ── 3. THE NAME PLATE ────────────────────────────────────────────
+         The pill carrying the waypoint's name (1A, 2A, 3A… generated in
+         order). It is drawn UNDER the line, as in the design, so a leg that
+         crosses a plate passes over it.
+
+         WHERE IT SITS — the two knobs at the bottom of this group. Both are
+         measured from the RING'S CENTRE, and both move the plate's TOP-LEFT
+         CORNER, which is the point the plate hangs from; it then grows right
+         and down from there, as wide as the name needs.
+
+                       ·  = the ring's centre, where measuring starts
+                    ╭──┼──╮
+                    │  ·  │
+                    ╰──┼──╯
+                       │   dx ──→
+                       ↓ dy    ┌─────────┐
+                               │   2A    │  ← the plate's top-left corner
+                               └─────────┘     lands exactly here
+
+         dx is positive to the RIGHT, negative to the left.
+         dy is positive DOWNWARDS, negative upwards.
+
+         A plain number is a share of the ring's diameter, so the plate keeps
+         its distance if you make the ring bigger: with a 30px ring, dx 0.1 is
+         3px right and dy 0.3 is 9px down. Write px instead — dx: 12px — and
+         it is simply 12 design px, whatever the ring does.
+
+         To put the plate ABOVE the ring you have to clear the plate's own
+         height as well, since dy places its top: with a 34px plate and a 30px
+         ring, dy: -49px sets it just above. Below-left, with a plate about
+         60px wide: dx: -75px. (In px these are easy to try; in shares they
+         would have to be worked out against the ring every time.) */
+      --route-show-label: 1;          /* 0 hides every name plate */
+      --route-label-h: 34px;          /* height of the pill; its WIDTH comes
+                                         from the text plus the padding */
+      --route-label-text: 16px;       /* font size of the name */
+      --route-label-weight: 400;      /* 400 normal, 500 medium, 700 bold */
+      --route-label-font: Roboto, system-ui, sans-serif;
+      --route-label-pad: 0.42;        /* side padding, as a share of the
+                                         plate's own height: 0.42 of 34px is
+                                         about 14px on each side */
+      --route-label-radius: 20%;      /* corner rounding, in per cent OF THE
+                                         PLATE'S HEIGHT: 50% is a full pill,
+                                         0% a sharp rectangle, 15% a soft one */
+      --route-label-dx: 0.6;          /* → right of the ring's centre; a share
+                                         of the ring, or px (e.g. 12px) */
+      --route-label-dy: -0.3;          /* ↓ below the ring's centre; same two
+                                         ways, and minus goes up */
+      --route-label-bg: rgb(from #32353E99 r g b / 70%);     /* the pill itself */
+      --route-label-color: rgb(from #FFFFFF r g b / 100%); /* the name on it */
+
+      /* ── THE TARGETS on the map ───────────────────────────────────────
+         Marks standing on the ground — ta412.png and the like — each at a
+         place of its own, which the map carries along as it moves. WHERE they
+         stand is the TARGETS list in demo/main.ts, beside the route they
+         belong to; here is only how big they are drawn.
+
+         The spot each one stands on is not the middle of its picture: the
+         artwork hangs a plate under the mark, so the two anchor knobs say
+         which point of the picture is on the ground. Measured off the
+         artwork: half way across, a third of the way down — the middle of
+         the triangle. */
+      --target-show: 1;          /* 0 hides them all */
+      --target-size: 80px;      /* the picture's width; its height follows */
+      --target-anchor-x: 50%;    /* which point of it stands on the spot */
+      --target-anchor-y: 32%;
+      --target-opacity: 100%;
+
+      /* ── THE AREAS, Red Area.png and the like ────────────────────────
+         Stretches of GROUND, not marks: they lie flat on the map under
+         everything else, they grow and shrink with the zoom because their
+         size is given in metres, and they keep their compass direction
+         however the aircraft turns.
+
+         WHERE each one lies, HOW WIDE it is in metres and WHICH WAY it faces
+         are the AREAS list in demo/main.ts — they belong to the ground. The
+         two knobs here are only about how strongly they are drawn. */
+      --area-show: 1;          /* 0 hides every area at once */
+      --area-opacity: 100%;    /* 100% as the file is; 60% quieter */
+
+      /* ── THE STRIKE ─────────────────────────────────────────────────
+         The trigger is on the stick, in the simulator's window. What happens
+         on THIS screen: the store that was chosen leaves the weapons screen
+         at once, and when the weapon lands the launcher's mark is taken off
+         the map — for good, not just for a moment.
+
+         THE BURST IS NOT ON THIS SCREEN. It belongs to the CAMERA screen,
+         where the truck is actually seen: simGig_gray.gif, laid over the
+         camera's picture on the very spot the truck stood on. The simulator
+         places it, because only it knows where the lens is pointing, and it
+         grows as you close in. The TIMES belong to the simulator too —
+         WEAPON_FLIGHT_S (10 s from the trigger to the strike), BOOM_HOLD_S
+         (3 s the burst then shows) and BOOM_SIZE_M (60 m across) at the top
+         of demo/main.ts. The one knob here is how it is laid on. */
+      --boom-blend: lighten;   /* the file is drawn on black, so only what is
+                                  BRIGHTER than the camera's picture shows:
+                                  the fire and the smoke come through and the
+                                  black around them does not. `screen` lifts
+                                  the whole square instead, which over a grey
+                                  picture washes it out; `normal` pastes the
+                                  file as it is, black square and all. */
+
+      /* ── THE COMPASS ROSE, compass.png ──────────────────────────────
+         The rings and the bearings, drawn about the aircraft's own place on
+         the map and UNDER everything else the map draws: the route, the
+         areas, the marks, the wingman and the aircraft all come down on top
+         of it.
+
+         ONLY THE OUTER RING TURNS — the one the bearings are written on —
+         so its N lies on true north, as a compass does. The rings inside it
+         carry no bearings and stand still. --compass-split is where one
+         gives way to the other, as a share of the picture's width: measured
+         off the file, the outermost ring sits at about 41% and the next one
+         in at about 30%, so 35.6% falls cleanly between them.
+
+         Its size is in design px and does NOT follow the zoom, so the rings
+         are a frame rather than a measure of distance — tell me if they
+         should stand for real miles and I will tie the size to the range the
+         map is set to. */
+      --compass-show: 1;
+      --compass-size: 1700px;    /* across, in design px */
+      --compass-opacity: 100%;
+      --compass-with-north: 1;   /* 0 nails the outer ring to the screen */
+      --compass-turn: 0deg;
+      --compass-split: 35.6%;    /* outside this turns, inside stands still */
+      /* It is drawn about the aircraft, which sits low on the screen, so this
+         lifts it to bring more of it into view — minus is up. It is dropped
+         when the Location key centres the aircraft, where there is nothing to
+         make up for. */
+      --compass-shift-y: -8px;
+      --compass-anchor-x: 50%;   /* the middle of the rings, measured off */
+      --compass-anchor-y: 50%;   /* the file — it is dead centre */
+
+      /* ── THE RELEASE ENVELOPE, Pink Zone.png ─────────────────────────
+         The ground a weapon may be let go over. It hangs on ONE WAYPOINT —
+         the one named below — and travels with it, but it is a MARK and not
+         a piece of land: it keeps its size on the screen whatever the zoom,
+         and it never turns with the map.
+
+         It is drawn OVER the route on purpose. The picture is see-through
+         where it is filled, so the line reads on through it and is plainly
+         underneath rather than cut off by it. */
+      --zone-show: 1;
+      --zone-at: AAT;          /* the waypoint it hangs on, by name */
+      --zone-size: 900px;      /* its width, in design px; height follows */
+      --zone-opacity: 100%;    /* 100% as the file is drawn */
+      /* 1 lays it ON THE GROUND: it turns with the map, so it covers the
+         same land however the aircraft comes at it and nothing of it swings
+         round as the aircraft turns. 0 nails it to the screen instead. */
+      --zone-with-ground: 1;
+      --zone-turn: 0deg;       /* plus turns it clockwise, if ever wanted */
+      /* THE WAYPOINT IS NOT ITS MIDDLE. These move the shape's own middle off
+         the waypoint, in design px: x to the right, y downwards, both as the
+         shape itself lies. The waypoint then passes near the middle without
+         sitting on it, and the line leaves the middle — so the two do not
+         read as one thing. 0 and 0 puts the waypoint back at the middle. */
+      --zone-shift-x: 90px;
+      --zone-shift-y: -60px;
+      /* Which point of the picture sits on the waypoint — the dot at its
+         middle, measured off the file. Only to be changed if the file is. */
+      --zone-anchor-x: 49.8%;
+      --zone-anchor-y: 45.4%;
+
+      /* ── THE LINE FROM THE ENVELOPE TO THE MARK ──────────────────────
+         It runs from the middle of the filled shape to the middle of the
+         launcher's mark. The black is drawn first and wider and the pink
+         over it, which is what makes the black read as a casing round the
+         pink; a round pink head sits on the envelope's end, and the other
+         end is left bare because the mark is drawn after it and covers it,
+         so the line seems to come out from under the mark. */
+      --zoneline-show: 1;
+      --zoneline-colour: #FF5FDC;
+      --zoneline-width: 2px;
+      --zoneline-casing: #000000;
+      --zoneline-casing-width: 5px;
+      --zoneline-dot: 18px;        /* the head, across */
+      --zoneline-dot-edge: 2px;  /* and the black round it */
+
+      /* ── THE STRUCK MARKS, Target_after.png ──────────────────────────
+         The same marks in every way that matters — they stand on their own
+         spot of ground and the map carries them along — drawn with a second
+         set of knobs of their own, so the grey mark and the red triangles are
+         sized and faded apart from one another. A line in the TARGETS list
+         with kind: 'after' is drawn with these.
+
+         Mind the size: this artwork is a 400x400 square with the triangle
+         sitting in the middle of it, about a quarter of the way across, so
+         the number below is the width of the WHOLE SQUARE and the triangle
+         comes out roughly 23% of it. 320 gives a triangle about 75 wide —
+         the same as the red ones. */
+      --target-after-show: 1;        /* 0 hides every struck mark */
+      --target-after-size: 140px;    /* the square's width; its height follows */
+      --target-after-anchor-x: 50%;  /* the middle of the triangle, measured */
+      --target-after-anchor-y: 47.8%;/* off the artwork */
+      --target-after-opacity: 100%;
+
+      /* ── THE MARKS BEFORE THE STRIKE, Target_befor.png ───────────────
+         The third kind, on knobs of its own in just the same way. A line in
+         the TARGETS list with kind: 'befor' is drawn with these.
+
+         Its artwork is the same 400x400 square with the triangle in the
+         middle, so the same numbers suit it: 320 gives a triangle about 75
+         wide, the same as the red ones. */
+      --target-befor-show: 1;
+      --target-befor-size: 140px;
+      --target-befor-anchor-x: 50%;
+      --target-befor-anchor-y: 47.8%;
+      --target-befor-opacity: 100%;
+
+      /* ── THE LAUNCHER'S MARK, truck_icon.png ─────────────────────────
+         It stands on the very spot the launcher stands on in the simulator,
+         and unlike every other mark IT ANSWERS A PRESS: press it on the map
+         and it puts on truck_icon_selected.png, press it again and it takes
+         it off. The press is tested against the box the picture takes up, so
+         making it bigger here makes it easier to hit as well as easier to
+         see.
+
+         The spot it stands on is the middle of the RING, not of the whole
+         picture — the name underneath hangs below it — so the anchor is a
+         third of the way down. */
+      --target-truck-show: 1;
+      --target-truck-size: 60px;      /* the picture's width; its height follows */
+      --target-truck-anchor-x: 50%;   /* the middle of the ring */
+      --target-truck-anchor-y: 33%;
+      --target-truck-opacity: 100%;
+
+      /* THE PRESSED FACE is a file of its own, and the two are NOT drawn the
+         same: truck_icon_selected.png carries a frame of brackets round the
+         ring, so at the same width its ring comes out smaller and the mark
+         seems to shrink and shift as it is pressed. These four put that
+         right — the same four knobs again, for that face alone. Each falls
+         back to the one above it, so clearing a line changes nothing.
+
+         HOW TO SET THEM. Press the mark and watch the ring:
+           · ring too small        → raise --target-truck-sel-size
+           · ring too big          → lower it
+           · ring sits high or low → nudge --target-truck-sel-anchor-y
+         The brackets look about a quarter wider than the ring, so the
+         pressed face starts a quarter larger; tune it by eye from there. */
+      --target-truck-sel-size: 60px;
+      --target-truck-sel-anchor-x: 50%;
+      --target-truck-sel-anchor-y: 33%;
+      --target-truck-sel-opacity: 100%;
+
+      /* ── THE WEAPON CUE: searching → tracking → launch ────────────────
+         Drawing level with a cue starts a sequence of three rings on its own
+         spot of ground. They sit in the same place and are the same size —
+         only the picture changes:
+
+             level with it ──delay──▶ [searching] ──▶ [tracking] ──▶ [launch] ──▶ gone
+
+         Being level counts ALONG THE ROUTE, so passing wide of the cue, to
+         the left or the right of the line, still starts it. Each runs once
+         per flight, several may run at once, and a restart (R in the
+         simulator) arms them all again.
+
+         Times are in seconds; sizes are design px like everything else.
+
+         THESE FOUR TIMES ARE THE SHARED ONES. A set in the CUES list in
+         demo/main.ts may be given times of its own (delay / searching /
+         tracking / launch, in seconds); where it is, its own time wins and
+         these are ignored FOR THAT SET ONLY. A set that says nothing about
+         times runs on the four below, so changing one here moves every set
+         that has not been given its own. */
+      --cue-delay: 0s;        /* the wait between crossing it and the first ring */
+      --cue-searching: 3s;    /* how long searching_icon_ring.png shows */
+      --cue-tracking: 4s;     /* then tracking_icon_ring.png */
+      --cue-launch: 15s;      /* then Launch_icon_ring.png, and it is gone */
+      /* How big the rings are drawn. WHERE each cue stands, which set of
+         pictures it uses and when it begins are in the CUES list in
+         demo/main.ts — they belong to the flight, not to the look. */
+      --cue-size: 700px;      /* the ring's width (the artwork is square) */
+      --cue-opacity: 100%;
+      /* THE SOUNDS, one per stretch, played the moment its ring comes up:
+         SEARCH 1. GRND.mp3, TRACKING 1. GRND.mp3 and MS 1. GRND.mp3, all in
+         public/. 1 plays them, 0 keeps the screen silent; --cue-volume is how
+         loud, as a share of the file's own level. (A browser will not make a
+         noise before the person has touched the window — the first click or
+         key anywhere in the map arms them.) */
+      --cue-sound: 1;
+      --cue-volume: 100%;
+
+      /* ── THE LINE from the cue to the aircraft ────────────────────────
+         From the moment TRACKING comes up, a straight line joins the badge at
+         the middle of the cue to the compass ring round the aircraft. One end
+         is pinned to the ground with the cue, the other rides the aircraft, so
+         it swings and stretches as the aircraft flies on or turns away.
+
+         It is two strokes in the same place — a black one, wider, and the
+         coloured one over it — which leaves an even black edge either side:
+         4 and 2 make 1px of black showing on each side. Where it meets the
+         ring sits a dot, its middle ON the ring's own line. */
+      --cueline-width: 2px;              /* the coloured line */
+      --cueline-color: #FFCC00;
+      --cueline-casing: 4px;             /* the black under it, edge to edge */
+      --cueline-casing-color: #000000;
+      --cueline-dot: 12px;               /* the dot on the ring */
+      --cueline-dot-color: #FFCC00;
+      --cueline-dot-stroke: 1.5px;
+      --cueline-dot-stroke-color: #000000;
+      /* How much of the middle of the cue is laid back over the line, so that
+         the line passes UNDER the little icon there and over everything else.
+         Measured as a radius from the cue's centre, in design px. */
+      --cueline-cap: 24px;
+
+      /* The same line during LAUNCH: red, thicker, with a bigger dot. Anything
+         left as var(--cueline-…) simply follows the tracking knob above. */
+      --cueline-launch-width: 4.5px;             /* thicker than tracking */
+      --cueline-launch-color: #FF5151;
+      --cueline-launch-casing: 8px;              /* 1.75px of black each side */
+      --cueline-launch-casing-color: var(--cueline-casing-color);
+      --cueline-launch-dot: 17px;                /* and a bigger dot */
+      --cueline-launch-dot-color: #FF5151;
+      --cueline-launch-dot-stroke: var(--cueline-dot-stroke);
+      --cueline-launch-dot-stroke-color: var(--cueline-dot-stroke-color);    /* how strongly they are drawn: 100% is the
+                                 artwork as it is, 50% half as present */
+
+      /* THE AIRCRAFT SYMBOL on the map: two pictures, both centred on the
+         aircraft's place on the screen.
+
+         Me_icon.png is the aircraft. It is drawn nose-up and never turns.
+         --aircraft-size is its width, in design px.
+
+         Me_ring.png is the compass ring around it, with the N already on it.
+         The ring TURNS until its N points at true north; everything else on
+         it comes round with it.
+           --ring-size   the ring's width, as a percentage of the aircraft's
+           --ring-north  where the N sits in the artwork, as an angle clockwise
+                         from the top. Measured off the file: 30.2°. Change the
+                         file and this is the one number to re-measure — turn it
+                         until the N points straight up when flying due north. */
+      --aircraft-size: 170px;
+      /* The dark disc behind the aircraft, as a share of the strength it is
+         drawn with in Me_icon.png (black at about 76%, so about a quarter of
+         the ground shows through it). 100% = the file as it is; lower lets
+         more of the map through; 0% = no disc at all. */
+      --symbol-disc: 80%;
+      --ring-size: 98%;
+      --ring-north: 30.2deg;
+
+      /* ── THE GREEN MARKS ROUND THE RING, green_icon.png ──────────────
+         The cross and the arcs that frame the compass ring. The circle in
+         the middle of that file is laid exactly on the white ring, so the
+         green always hugs it however big the symbol is drawn — resize the
+         aircraft or the ring and the green follows on its own.
+
+         It stands upright on the screen, as in the design. */
+      --green-show: 1;          /* 0 and the green is not drawn */
+      --green-opacity: 100%;
+      --green-fit: 106%;        /* THE SIZE KNOB. It is measured against the
+                                   white ring: 100% lays the circle inside
+                                   the green file exactly ON the ring, and
+                                   anything above opens the whole picture
+                                   out — cross, arcs and all — leaving a gap
+                                   between the ring and the green circle.
+                                   160% reaches well out; 100% hugs. */
+      /* THE GREEN GLOW. While a threat is up — from the moment the
+         searching ring comes up until the launch ring goes, the whole of the
+         sequence — one quadrant of the green lights up on the side the
+         threat lies on. The circle round the aircraft is cut into eight
+         slices of 45°, each with a file of its own, and the one the threat
+         falls in is laid over the green. Several threats at once light
+         several quadrants. */
+      --green-glow-show: 1;        /* 0 keeps the green plain */
+      --green-glow-opacity: 100%;  /* how strongly the lit quadrant burns */
+
+      --green-with-north: 0;    /* 0 upright on the screen; 1 turns it with
+                                   the compass ring, as the N does */
+      --green-turn: 0deg;       /* swings it round; plus is clockwise */
+      /* Measured off green_icon.png — the middle of its own circle and how
+         far that circle runs, as shares of the picture. Only re-measure
+         these if the file itself is redrawn. */
+      --green-anchor-x: 49.96%;
+      --green-anchor-y: 49.98%;
+      --green-radius: 7.49%;
+
+      /* ── THE BEAM OUT OF THE NOSE, Ellipse.png ───────────────────────
+         The wedge of light that opens out ahead of the aircraft. Its point
+         sits on the nose and it widens away in front; it is drawn UNDER the
+         symbol, so the disc, the ring and the white aircraft all lie over it
+         and only the part beyond them shows.
+
+         The map is track-up, so the nose points up the screen and so does the
+         beam — it follows the aircraft round by construction, with nothing to
+         set. */
+      --beam-show: 1;           /* 0 and there is no beam */
+      --beam-length: 1000px;    /* how far it reaches, in design px; its
+                                   width follows the picture's own shape */
+      --beam-opacity: 100%;     /* 100% as the file is; lower is fainter */
+      --beam-nose: 32%;         /* where its point sits, as a share of the
+                                   aircraft's width, ahead of the symbol's
+                                   middle: 0% the middle, 50% the very edge */
+      --beam-turn: 0deg;        /* swings it off the nose; plus is to the
+                                   RIGHT, minus to the left */
+      --beam-anchor-x: 47.3%;   /* where the point is ACROSS the picture,
+                                   measured off the file — only change this
+                                   if the file itself changes */
+
+      /* ── THE WINGMAN, Friend.png ─────────────────────────────────────
+         The second aircraft, holding formation on ours. He is not flown: he
+         flies OUR OWN TRACK a moment late, so through a turn he cuts the
+         corner behind us and he points the way we were pointing when he was
+         where he is — the way a man holding formation really looks.
+
+         Two things put him behind us, and they add up:
+           --friend-delay  how many SECONDS late he flies our track. This is
+                           the main one: at 480 kt, one second is about 250 m,
+                           so 2s leaves him half a kilometre back. Being a
+                           delay and not a distance, it is what makes him
+                           follow the turns instead of sliding sideways.
+           --friend-back   a further push straight back along that old
+                           heading, in METRES. 0 leaves the delay to do it
+                           all.
+           --friend-side   how far out to the side of that old heading, in
+                           METRES. PLUS is to the LEFT, minus to the right —
+                           the same sense as the route and the targets. */
+      --friend-show: 1;         /* 0 and he is not there at all */
+      --friend-delay: 1s;
+      --friend-back: 1000px;       /* metres, despite the px — see the note below */
+      --friend-side: 1500px;     /* metres, the same */
+      --friend-size: 120px;     /* his width on the screen, in design px */
+      --friend-opacity: 100%;
+      /* The two distances above are in METRES ON THE GROUND, not pixels: he
+         keeps his station as the zoom changes, exactly as a real wingman
+         would. The px is only there because CSS wants a unit on a number. */
+
+      /* WHERE THE AIRCRAFT SITS on the map, as a fraction of the map's height:
+         0 = the top edge, 0.5 = the middle, 1 = the bottom. It is kept in the
+         lower third, so most of the screen shows the ground the aircraft is
+         flying INTO rather than the ground behind it. The map scrolls and
+         turns about this same point. */
+      --map-aircraft-y: 0.75;
+      /* …and where it sits while the Location button is pressed in: the
+         middle of the map, as much behind as in front. The button swaps
+         between this one and the one above. */
+      --map-aircraft-y-middle: 0.5;
+
+      /* ── top-right stack, in the order they appear ──    width / height ── */
+      --btn-layout-w: 212px;      --btn-layout-h: 66px;   /* layout.png */
+      --btn-icon-w: 64px;        --btn-icon-h: auto;     /* icon.png */
+      /* THE NORTH DOT on that button: a dot riding the pale ring drawn into
+         icon.png, at whatever angle true north is — the same north the ring
+         round the aircraft shows, so the two always agree.
+           --iconnorth-size    its diameter, in design px
+           --iconnorth-color   its colour
+           --iconnorth-radius  how far out it sits, as a share of the button's
+                               own width. 32.1% is where the ring is drawn in
+                               the artwork; re-measure it if the file changes. */
+      --iconnorth-size: 6px;
+      --iconnorth-color: #FF3E3F;
+      --iconnorth-radius: 32.1%;
+      --btn-23d-w: 64px;         --btn-23d-h: 86px;      /* 2:3d.png — Figma 64 x 86 */
+      --btn-zoom-w: 64px;        --btn-zoom-h: 160px;     /* zoom in:out_NN.png */
+      /* How much of the zoom button each key takes, measured from its own end.
+         The artwork draws them from 10% to 31% and from 68% to 89% of the
+         height; 38% covers each key with room to spare and leaves the number
+         in the middle inert. */
+      --zoom-key-h: 38%;
+      --btn-location-w: 64px;    --btn-location-h: auto; /* Location on the map.png */
+
+      /* ── top-LEFT: friends, and the targets panel under them ── */
+      --btn-friends-w: 112px;    --btn-friends-h: 66px;  /* Friends and targets */
+      /* layout.png is three buttons drawn as one plate, and only its LEFT one
+         is live. This is where that part ends, as a share of the plate's width:
+         its glyph is centred at 17.7% and the next one starts at 33.8%, so a
+         third is both the designed split and a clean place to cut. Nothing is
+         drawn differently — the plate is one picture, and this only says where
+         the click counts. */
+      --layout-hotspot-w: 33.4%;
+
+      /* ── THE SCREEN ITSELF ────────────────────────────────────────────
+         How the width of the window is divided when an arrangement other than
+         "map full screen" is chosen. The numbers are in the FRAME's own units
+         (--ui-design-w above, 2296), which is how the design measures: the map
+         is 1140 of those 2296 across, and what is left is split evenly between
+         the two side columns — 578 each. Changing 1140 moves both sides. */
+      --layout-five-centre: 1140;
+      /* and how tall that middle is — the design gives the map a square. */
+      --layout-five-height: 1140;
+      /* Half and half: each side is this square — the map on the left, the
+         camera screen on the right, the same 1140 the map has above. */
+      --layout-half-size: 1140;
+      /* Map with a bar beside it: the map takes --layout-side-map across and
+         the whole height under the top panel; the bar is --layout-side-pane
+         wide, with a square screen at its foot and, above that, one that
+         takes whatever height is left — so the bar fills the height exactly
+         whatever the window is. 1910 + 7 + 377 is the frame's 2296. */
+      --layout-side-map: 1910;
+      --layout-side-pane: 377;
+      /* The panes beside it, as Figma sizes them: 571 x 567 of the frame's
+         2296 x 1280. They are drawn at that size times the scale, so they keep
+         their shape whatever shape the window is; the map takes whatever width
+         is left over, which on a frame-shaped window is exactly the 1140 the
+         design gives it. */
+      --sidepane-w: 570;
+      --sidepane-h: 570;
+      /* The air around the screens, in design px like everything else: 7 is
+         what the design leaves — 1140 for the map + 2 x 570 for the screens
+         + 2 x 7 is the frame's 2296, near enough. */
+      --sidepane-gap: 7px;
+      --sidepane-bg: #000000;
+
+      /* ── THE NAME BUTTON ON EACH SCREEN, AND ITS MENU ────────────────
+         Each of the four screens carries a button in its top-left corner
+         with its own name on it. Pressing it drops a menu of all five
+         screens — EW, Weapon, Radar, Targets, Cam — and choosing one puts
+         that screen in this pane. The same screen may be shown in two panes
+         at once; nothing stops it.
+
+         The button is laid OVER the one drawn into each screen's artwork, so
+         these three numbers are measured to cover those: they are shares of
+         the pane, and the button's height follows its own picture. */
+      --pane-button-x: 1.6%;
+      --pane-button-y: 1.3%;
+      --pane-button-w: 34.7%;
+      --pane-menu-gap: 0.6%;       /* the air between the button and the menu */
+      --pane-menu-mark: #1FC4B6;   /* the colour of the screen already shown */
+      /* THE TALL LIST, in the five-way arrangement only. The right-hand
+         column opens with the targets list alone, as tall as both screens
+         together; the camera and the weapons sit on the left. Choose anything
+         else on that list and the column splits back into two, with this
+         screen underneath. Choose the list again and it goes tall again.
+         No other screen is ever drawn tall, and the list is tall only there. */
+      --pane-right-spare: radar;   /* ew, weapon, radar, targets or cam */
+      /* The tall list's shape: the height of list_5_layout_all.png over its
+         width, 4512/2284. The pane is given exactly this, so nothing is
+         stretched. Two screens and the gap between them would be 1147/570 =
+         2.0123; exporting the file 4596 px tall instead of 4512 would make
+         the column come down exactly level with the one beside it. */
+      --pane-tall-ratio: 1.9755;
+
+      /* ── THE WEAPONS SCREEN ──────────────────────────────────────────
+         One of the eight stores is the SELECTED one, and it breathes: its
+         brightness falls away and comes back, over and over. Pressing any
+         other store hands the blink to it. Nothing else happens — it is a
+         mark of which store is chosen, and nothing in the flight depends
+         on it.
+
+         The eight, in the order they are numbered: 1-2 the top pair of 84s,
+         3-4 the middle pair, 5-6 the bottom pair, 7 the left AA and 8 the
+         right AA. Odd numbers are the left of each pair. */
+      --weapon-start: 3;           /* which one is selected when it opens */
+      --weapon-gone-colour: #061905;  /* the screen's own background: what is
+                                         left where a fired store used to be */
+      --weapon-blink-period: 1.5s; /* a whole breath; larger is slower */
+      --weapon-blink-low: 0.35;    /* how far the brightness falls: 1 is no
+                                      blink at all, 0 fades right out */
+      --weapon-blink-high: 1;      /* and how bright it comes back. 1 is the
+                                      file as it is; drop it a little if the
+                                      chosen store reads brighter than its
+                                      neighbours at the top of the breath */
+      --weapon-hotspot-pad: 1%;    /* how much easier than the picture the
+                                      stores are to hit, in pane per cent */
+      /*
+       * WHAT THE SCREENS DO ON A WINDOW THAT IS NOT THE FRAME'S SHAPE.
+       *
+       * 1 = grow to fill the height they have, keeping their own proportions
+       *     (571:567). The screen is used fully, and nothing is stretched or
+       *     cropped: the map simply takes whatever width is left. This is what
+       *     a 16:10 laptop needs — at the design size alone it would leave a
+       *     band of dead space above and below each screen.
+       * 0 = stay exactly 571 x 567 of the frame, and leave that band.
+       */
+      --sidepane-grow: 0;
+      /* …but never wider than this share of the window, so a very tall screen
+         cannot squeeze the map out. */
+      --sidepane-max-vw: 30;
+      /* How the artwork fills its pane: `cover` fills and crops a sliver if
+         the pane's shape ever differs from the file's, `contain` fits it all
+         in. With --sidepane-grow the shapes match, so neither crops. */
+      --sidepane-fit: cover;
+
+      /* ── THE CAMERA SCREEN ───────────────────────────────────────────
+         The picture comes from a camera under the aircraft, looking 45° below
+         the nose, and arrives from the simulator window about 15 times a
+         second. (Those two numbers, and how wide it sees, are set in
+         demo/main.ts beside the camera itself — they belong to the aircraft,
+         not to this screen.)
+
+         Here is only how it LOOKS: grey, and how much grain is laid over it.
+           --cam-grey        100% drains the colour out of it altogether
+           --cam-contrast    over 100% hardens it, under 100% softens it
+           --cam-brightness  lighter or darker overall
+           --cam-noise       the master strength; 0 leaves it clean
+
+         THE GRAIN IS NOT THE SAME ALL OVER. The sky is smooth and the ground
+         is rough, which is what a real sensor gives, so there are two sets of
+         grain and the picture decides between them by its own brightness:
+         bright is sky, dark is ground. The change-over is a slide, not a line
+         — --cam-noise-split says at what brightness it happens and
+         --cam-noise-soften how wide the slide is, so the two meet gently
+         across the horizon wherever the horizon happens to be. */
+      /* THE ONE THING THAT KEEPS ITS COLOUR in the camera's picture: the
+         red mark over the truck. Everything else goes grey as before. A
+         pixel counts as that red when it is --cam-red-ratio times as strong
+         in red as in either other colour, and at least --cam-red-min bright;
+         the ground never comes near it. 0 on --cam-keep-red turns the whole
+         thing off and the picture is grey throughout. */
+      /* THE MARKINGS AND THE ZOOM. Some of the camera's markings are only
+         for the wide view: once the lens is tighter than this, the screen
+         puts on the quieter set — cam_5_layout_zoomin.png in place of
+         cam_5_layout.png — and puts the full set back when it opens out
+         again. It follows the lens itself, so it makes no difference whether
+         the zoom came from the throttle or from slaving to a mark.
+         In degrees; the camera rests at CAM_FOV_DEG in demo/main.ts. */
+      --cam-zoom-fov: 4;
+
+      --cam-keep-red: 1;
+      --cam-red-ratio: 1.8;
+      --cam-red-min: 80;
+      --cam-grey: 100%;
+      --cam-contrast: 118%;
+      --cam-brightness: 104%;
+      --cam-noise: 100%;              /* master: 0 silences all of it */
+      --cam-noise-sky: 7%;            /* how strong it is over bright sky */
+      --cam-noise-ground: 11%;        /* …and over dark ground */
+      --cam-noise-scale-sky: 1;       /* how coarse each speck is, screen px */
+      --cam-noise-scale-ground: 3;
+      --cam-noise-split: 45%;         /* the brightness the two meet at */
+      --cam-noise-soften: 45%;        /* how wide that meeting is */
+
+      /* ── THE RADAR SCREEN's traces ───────────────────────────────────
+         The artwork (radar_5_layout.png) carries the grid and the frame; the
+         traces on it are drawn in code, so they can come and go.
+
+         SIZES are design px as measured on the radar screen ITSELF, which is
+         --radar-basis wide in Figma — 570, the size it has in the five-way
+         arrangement. The screen is shown at 1140 in the half-and-half one, and
+         the traces grow with it, so a square always covers the same part of
+         the grid whichever arrangement is on. */
+      --radar-basis: 570;
+      --radar-tri-w: 20.8px;        /* the cyan triangle — as wide as it is
+                                       tall, measured off the design itself */
+      --radar-tri-h: 20.64px;
+      --radar-tri-color: #39DFEB;
+      --radar-tri-stroke: 1.49px;   /* hollow ones: this line, no fill */
+      --radar-sq: 21.252px;         /* the yellow square, both ways */
+      --radar-sq-color: #FFCC00;
+      --radar-sq-stroke: 1.49px;
+      /*
+       * HOW THEY MOVE. Every --radar-interval the picture is stirred: a few
+       * traces fade out and come back a little way off, and one may leave or
+       * arrive altogether. Nothing jumps — everything crosses over in
+       * --radar-fade — and the count is held between --radar-min and
+       * --radar-max so the screen never empties or fills up.
+       */
+      --radar-interval: 15s;   /* how often the screen is stirred */
+      --radar-change: 3;       /* how many traces move each time */
+      --radar-flux: 1;         /* how many leave or arrive each time */
+      --radar-fade: 0.5s;      /* how long a trace takes to go or come */
+      --radar-drift: 3.5%;     /* how far one moves, as a share of the screen */
+      --radar-min: 3;         /* never fewer traces than this… */
+      --radar-max: 5;         /* …and never more */
+
+      /* ── THE LAYOUT CHOOSER ────────────────────────────────────────────
+         Every size and every colour of the menu that drops out of the left
+         third. Sizes are design px like the rest of this file (they scale with
+         the screen); the percentages are shares of the thing they sit in.   */
+      /* Where it hangs: centred under the left third by default. Positive x
+         moves it right, y lowers it. */
+      --layoutmenu-x: -130px;
+      --layoutmenu-y: 6px;
+      /* The plate */
+      --layoutmenu-w: 340px;       /* its width — everything inside follows */
+      --layoutmenu-pad: 12px;      /* the frame around the four options */
+      --layoutmenu-gap: 10px;       /* between one option and the next */
+      --layoutmenu-radius: 14px;
+      /*
+       * THE COLOURS come from the layout button itself — #343B42 — so the menu
+       * reads as that button opening rather than as a panel from somewhere
+       * else. The button is 60% over the map; the menu carries CONTENT, so it
+       * is more opaque: at 60% the satellite imagery under it shows through and
+       * the plate shifts colour as the aircraft flies over bright sand or dark
+       * basalt (#4A4843 against #323437 — a difference you can see). 78% holds
+       * one colour wherever the map is; raise it to .92 to shut the ground out
+       * completely, or drop it to .60 to match the button exactly.
+       */
+      --layoutmenu-bg: rgba(52, 59, 66, .78);
+      --layoutmenu-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+      /* One option: the frame that holds a diagram */
+      --layoutcell-aspect: 4 / 3;  /* its shape, width / height */
+      --layoutcell-pad: 5px;       /* between the frame and the panes */
+      --layoutcell-gap: 4px;       /* between the panes inside it */
+      --layoutcell-radius: 11px;
+      --layoutcell-border: 1px;
+      /* A faint white tint rather than a flat grey: it lifts whatever it sits
+         on, so the three unused options stay a step above the plate at any
+         plate opacity. Over #343B42 it lands on #4B5259. */
+      --layoutcell-bg: rgba(244, 253, 255, .12);
+      --layoutcell-bg-hover: rgba(244, 253, 255, .20);
+      /* A pane inside a diagram (lands on #82888F over the cell above) */
+      --layoutpane-bg: rgba(144, 150, 156, .80);
+      --layoutpane-radius: 5px;
+      /* The arrangement in use: solid, with the thin white stroke */
+      --layoutcell-bg-on: #ABB6C1;
+      --layoutpane-bg-on: rgba(221, 231, 239, .93);
+      --layoutcell-border-on: rgba(255, 255, 255, .92);
+      /* The map glyph that marks which pane the map is in (icon_map.png) */
+      --layoutglyph-w: 38%;        /* share of its pane's width */
+      --layoutglyph-max: 22px;     /* …but never bigger than this */
+
+      /* `match` = as wide as the button it drops out of. */
+      --btn-friendlist-w: match; --btn-friendlist-h: auto; /* Friend_list_open.png */
+      /* `panel` = drawn at the friend list's own scale, so the bar below it is
+         the same size it is in the design and the two read as one panel. */
+      --btn-targets-w: panel;    --btn-targets-h: auto;  /* Targets_Close / _list_open */
+
+      /* ── bottom centre: the data panel, and the two live numbers on it ── */
+      --btn-bottompanel-w: 351px; --btn-bottompanel-h: 109px; /* Bottom Panel.png */
+      /*
+       * WHERE THE TWO NUMBERS GO ON THE PANEL. The artwork already carries the
+       * "lb" and "ft" and the green lamp; only the figures are written here,
+       * and each ENDS at its x so it grows leftwards and never walks into its
+       * unit. Both x and y are a share of the panel's own box, so they hold
+       * their place whatever size the panel is given. (Measured off the PNG
+       * as it now is, with the height gone from it and the fuel alone in the
+       * middle: "lb" starts at 54.4% across and its middle is 62.0% down, so
+       * the figure ends a whisker short of it, at the same height.)
+       */
+      /* ── THE SLAVE KEY on the panel ──────────────────────────────────
+         The left-hand key of the two drawn into Bottom Panel.png. Press a
+         mark on the map to pick it out, then press this, and the belly
+         camera holds that spot of ground however the aircraft turns; press
+         it again, or touch the pan buttons on the throttle, and it lets go.
+         With no mark picked out it does nothing.
+
+         Where the press region is, in shares of the panel's own box —
+         measured off the artwork, where the key runs from 11.7% to 34.5%
+         across and from 17.5% to 87.4% down. Nothing of the LOOK depends on
+         these: the lit key comes from the second panel picture, and these
+         four only say where a press counts. Widen them and the key is easier
+         to hit; nothing moves on the screen. */
+      --slave-key-x: 11.7%;   --slave-key-y: 17.5%;
+      --slave-key-w: 22.8%;   --slave-key-h: 69.9%;
+
+      --readout-fuel-x: 53.4%;   --readout-fuel-y: 62.0%;
+      --readout-alt-x: 55.4%;    --readout-alt-y: 79.7%;
+      /* The height is not shown any more — only the fuel. The artwork's "ft"
+         is still on the panel; this leaves the figure off it. Set it to 1 and
+         the altitude comes back exactly as it was. */
+      --readout-alt-show: 0;
+      /* Type size of each figure, in design px like every other size here.
+         The two are separate: the fuel and the altitude can read differently
+         without one being tied to the other. */
+      --readout-fuel-size: 18px;
+      --readout-alt-size: 18px;
+      /* How heavy the figures are drawn: 300 light, 400 regular, 500 medium,
+         700 bold. Roboto here is a variable font, so the numbers in between
+         are real weights too — 350 and 450 work. */
+      --readout-weight: 400;
+      /* And their colour, if they should sit back a little further
+         (#E6EAF2 reads as white without the glare of pure white). */
+      --readout-color: #fcfcfc;
+      /* How far the whole panel sits above the bottom edge of the map. It is
+         the panel's own knob, so moving it does not move the buttons in the
+         corners (those are --btn-edge). */
+      --bottompanel-bottom: 18px;
+
+      /* ── bottom-right stack, top to bottom ──            width / height ── */
+      --btn-rdr-w: 63px;         --btn-rdr-h: 67px;      /* RDR.png — above data */
+      --btn-data-w: 64px;        --btn-data-h: 192px;     /* data.png — RF / F / C */
+      --btn-tool-w: 64px;        --btn-tool-h: 64px;     /* Tool.png */
+      --btn-layers-w: 64px;      --btn-layers-h: 64px;   /* Layers.png — Figma 64 x 64 */
+    }
+
+    /* The face the design uses for the panel's clock — the same file for every
+       weight, since Assistant is a variable font. */
+    @font-face {
+      font-family: 'Assistant';
+      font-style: normal;
+      font-weight: 200 800;
+      font-display: swap;
+      src: url('./assets/assistant-latin.woff2') format('woff2');
+    }
+    @font-face {
+      font-family: 'Roboto';
+      font-style: normal;
+      font-weight: 100 900;
+      font-display: swap;
+      src: url('./assets/roboto-latin.woff2') format('woff2');
+    }
+    html, body { margin: 0; height: 100%; background: #0B1220; overflow: hidden;
+                 font-family: 'Roboto', system-ui, sans-serif; color: #F4F7FC; }
+    /* The screen is the panel across the top and the map under it, so the two
+       never overlap: the aircraft sits in the middle of the MAP, not in the
+       middle of the window. */
+    body { display: flex; flex-direction: column; }
+
+    /*
+     * THE CLOCK IN THE PANEL'S FIRST BOX.
+     *
+     * The panel is one picture with its figures drawn in, so the box is
+     * covered with a patch of its own background — flat black, measured off
+     * the artwork — and the hours, minutes and seconds are written over it in
+     * the same face, size and colour. Everything about where it sits is a knob
+     * below; demo/map.ts turns the design px into the panel's real pixels,
+     * since the panel is stretched to the width of the window.
+     */
+    #topBar { position: relative; flex: none; }
+    #topClock {
+      position: absolute;
+      left: var(--clock-patch-x-px, 0);
+      top: var(--clock-patch-y-px, 0);
+      width: var(--clock-patch-w-px, 0);
+      height: var(--clock-patch-h-px, 0);
+      background: var(--clock-patch);
+      pointer-events: none;
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: var(--clock-justify, flex-start);
+      font-family: var(--clock-font);
+      font-weight: var(--clock-weight);
+      font-variant-numeric: tabular-nums;
+      color: var(--clock-color);
+      font-size: var(--clock-size-px, 1em);
+      line-height: var(--clock-line-px, 1em);
+      letter-spacing: var(--clock-tracking-px, 0);
+    }
+    #topClock.is-off { display: none; }
+
+    /* The top panel: the width of the WINDOW, whatever shape it is, and the
+       HEIGHT the design gives it — 128 of the frame's 1280, times the scale.
+       Holding the height (rather than letting the artwork's own 6864 x 384
+       decide it) is what keeps the bar from eating into the screen on a wide,
+       short window: there it would be half as tall again. The artwork takes
+       the extra width across its own length. */
+    #topPanel {
+      display: block; flex: none;
+      width: 100%;
+      height: var(--toppanel-h-fitted, calc(var(--toppanel-h) * var(--ui-scale-num, 1)));
+      object-fit: fill;
+      user-select: none; -webkit-user-drag: none;
+    }
+
+    /* The map itself — satellite tiles, the path and the aircraft are all drawn
+       on this one canvas in demo/map.ts. It takes whatever height the panel
+       leaves. Nothing else is drawn over it, so the rest of the design can be
+       laid on a clean map. */
+    /*
+     * THE SCREEN UNDER THE TOP PANEL.
+     *
+     * One row: the map with however many panes beside it. "Map full screen"
+     * gives the whole row to the map and the side columns are not rendered at
+     * all; the five-way arrangement gives the map the middle --layout-five-centre
+     * of the frame and splits the rest into two columns of two.
+     *
+     * Everything inside the map — the aircraft, the lists, the buttons, the
+     * bottom panel — is positioned against #mapArea, so it all follows the map
+     * into the middle column without a single rule of its own changing.
+     */
+    #screen { display: flex; flex: 1 1 auto; min-height: 0;
+              gap: var(--sidepane-gap-fitted, var(--sidepane-gap)); }
+    #mapArea { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; }
+
+    .sideCol {
+      display: none; flex-direction: column; align-items: center;
+      justify-content: center;
+      gap: var(--sidepane-gap-fitted, var(--sidepane-gap)); min-width: 0;
+    }
+    /*
+     * One screen beside the map. Its size is worked out in demo/map.ts — from
+     * the height actually available and the artwork's own proportions — and
+     * handed back here. Leaving it to the browser's own intrinsic sizing (an
+     * aspect-ratio on a flexible height) gave columns wider than the screens
+     * inside them, and the map paid for it.
+     */
+    .sidePane {
+      position: relative;        /* the name button and its menu hang on this */
+      flex: 0 0 auto;
+      width: var(--sidepane-w-px, calc(var(--sidepane-w) * 1px * var(--ui-scale-num, 1)));
+      height: var(--sidepane-h-px, calc(var(--sidepane-h) * 1px * var(--ui-scale-num, 1)));
+      background: var(--sidepane-bg);
+      overflow: hidden;
+    }
+    /* The camera screen: the picture from the camera under the aircraft, drawn
+       live, with the camera's own markings over it. Until the first picture
+       arrives — before the flight starts — the still artwork stands in its
+       place, and if the markings file is not in the folder yet, the picture
+       simply shows without them. */
+    .camPane { position: relative; isolation: isolate; }
+    .camView, .camOverlay {
+      position: absolute; inset: 0; width: 100%; height: 100%;
+      pointer-events: none;
+    }
+    /*
+     * The markings sit on a near-black plate in the artwork, so they are laid
+     * over the picture with `lighten`: each pixel keeps whichever is brighter,
+     * which lets the white marks through and leaves the plate — 27 of 255 —
+     * to all but disappear. No second export is needed, and before the first
+     * picture arrives the pane simply shows the plate as it is.
+     */
+    .camOverlay { object-fit: cover; mix-blend-mode: lighten; }
+    .camOverlay.is-missing { display: none; }
+
+    /* The radar screen: its artwork is the grid and the frame, and the traces
+       on it — the triangles and the squares — are drawn over it, live. */
+    /*
+     * THE NAME BUTTON on each of the four screens, and the menu it opens.
+     *
+     * Every screen's artwork already has a name button drawn into it, in its
+     * own top-left corner. Those baked ones differ a little from screen to
+     * screen, so a real button — the artwork in Cam_button.png and the rest —
+     * is laid over the top of them, in the same place on every screen, and it
+     * is what reacts to a press. The menu drops from under it.
+     */
+    .paneBtn {
+      position: absolute; margin: 0; padding: 0; border: 0; background: none;
+      left: var(--pane-button-x, 1.6%); top: var(--pane-button-y, 1.3%);
+      width: var(--pane-button-w, 34.7%);
+      cursor: pointer; pointer-events: auto; z-index: 3;
+      line-height: 0;
+    }
+    .paneBtn img { display: block; width: 100%; height: auto; object-fit: fill; }
+    .paneMenu {
+      position: absolute; z-index: 4; display: none;
+      left: var(--pane-button-x, 1.6%);
+      width: var(--pane-button-w, 34.7%);
+      pointer-events: auto;
+    }
+    .paneMenu.is-open { display: block; }
+    .paneMenu > img { display: block; width: 100%; height: auto; object-fit: fill; }
+    .paneMenuRow {
+      position: absolute; left: 0; width: 100%;
+      margin: 0; padding: 0; border: 0; background: none; cursor: pointer;
+    }
+
+    /* THE WEAPONS SCREEN. The hotspots and the blinking copy are placed over
+       the artwork in its own coordinates, so the picture is stretched to the
+       pane rather than cropped to it — the difference is under a per cent,
+       and it keeps every store exactly where the file puts it. */
+    .weaponPane { position: relative; }
+    .weaponPane > img { object-fit: fill; }
+    .weaponBlink {
+      position: absolute; pointer-events: none;
+      /* It is laid on the store by its own measurements, so it must not be
+         stretched to the pane the way the screen artwork is. */
+      object-fit: fill;
+      animation: weaponBlink var(--weapon-blink-period, 1.6s) ease-in-out infinite;
+    }
+    .weaponBlink.is-off { display: none; }
+    /* A STORE THAT HAS BEEN FIRED. The shape file is used as a stencil and
+       filled with the colour of the screen's own background, so the store it
+       covers simply is not there any more: no rectangle, no seam, an empty
+       pylon. --weapon-gone-colour is that background — #061905, the flat
+       green-black the weapons artwork is drawn on. */
+    .weaponGone {
+      position: absolute; pointer-events: none;
+      background-color: var(--weapon-gone-colour, #061905);
+      -webkit-mask-size: 100% 100%; mask-size: 100% 100%;
+      -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+      -webkit-mask-position: center; mask-position: center;
+    }
+    .weaponGone.is-off { display: none; }
+    @keyframes weaponBlink {
+      0%, 100% { filter: brightness(var(--weapon-blink-high, 1)); }
+      50%      { filter: brightness(var(--weapon-blink-low, 0.45)); }
+    }
+    @media (prefers-reduced-motion: reduce) { .weaponBlink { animation: none; } }
+    .weaponStore {
+      position: absolute; margin: 0; padding: 0; border: 0;
+      background: none; cursor: pointer; pointer-events: auto;
+    }
+
+    .radarPane { position: relative; }
+    .radarPlot {
+      position: absolute; inset: 0; width: 100%; height: 100%;
+      pointer-events: none;
+    }
+    .sidePane img {
+      display: block; width: 100%; height: 100%;
+      object-fit: var(--sidepane-fit);
+      user-select: none; -webkit-user-drag: none;
+    }
+
+    /*
+     * The five-way arrangement: two columns of screens at the size the design
+     * gives them, and the map taking the rest. Sizing the SCREENS and letting
+     * the map flex (rather than the other way round) is what keeps this right
+     * on a window that is not the frame's shape: artwork cannot be stretched
+     * without showing it, while a map simply shows more or less ground. On a
+     * window the frame's shape the map lands on its 1140 by itself.
+     */
+    #screen.is-five { align-items: center; justify-content: center; }
+    /* The four screens of this arrangement only — NOT the half-and-half one,
+       which shares the same class and would otherwise come along as a fifth
+       column and push the rest out of place. */
+    #screen.is-five #leftCol,
+    #screen.is-five #rightCol { display: flex; flex: 0 0 auto; }
+    /* THE TALL LIST. Only the right-hand column, only in the five-way
+       arrangement, and only while the list is what it shows: the list stands
+       in place of both screens, and the one that would be under it is put
+       away. Its artwork is the taller file.
+
+       Its height comes from THE FILE'S OWN SHAPE — --pane-tall-ratio, the
+       taller file's height over its width — and not from the two screens it
+       replaces, so the picture is never stretched and the button in its
+       corner keeps its proper shape. Where the file's shape does not quite
+       come to the two screens' height, the column ends a little short of the
+       one beside it; export the file at that exact shape and the two line up
+       to the pixel. */
+    #screen.is-five #rightCol.is-tall > .sidePane:first-child {
+      height: calc(
+        var(--sidepane-w-px, calc(var(--sidepane-w) * 1px * var(--ui-scale-num, 1)))
+        * var(--pane-tall-ratio));
+    }
+    #screen.is-five #rightCol.is-tall > .sidePane:last-child { display: none; }
+    /* The map keeps the square the design gives it — 1140 x 1140 of the
+       frame — rather than stretching into whatever is left over. */
+    #screen.is-five #mapArea {
+      flex: 0 0 auto;
+      width: var(--mapbox-w-px, calc(var(--layout-five-centre) * 1px * var(--ui-scale-num, 1)));
+      height: var(--mapbox-h-px, calc(var(--layout-five-height) * 1px * var(--ui-scale-num, 1)));
+    }
+
+    /*
+     * Half and half: the map on the left, the radar screen on the right, each
+     * the square the design gives it — --layout-half-size of the frame, the
+     * same 1140 the map has in the five-way arrangement. Sizing them rather
+     * than letting them share out the window is what keeps the artwork from
+     * being pulled about on a window of another shape; the pair is centred,
+     * and what is left over is air on either side.
+     */
+    #screen.is-half { align-items: center; justify-content: center; }
+    #screen.is-half #halfCol { display: flex; flex: 0 0 auto; }
+    #screen.is-half #mapArea,
+    #screen.is-half #halfCol .sidePane {
+      flex: 0 0 auto;
+      width: var(--halfbox-px, calc(var(--layout-half-size) * 1px * var(--ui-scale-num, 1)));
+      height: var(--halfbox-px, calc(var(--layout-half-size) * 1px * var(--ui-scale-num, 1)));
+    }
+    /* …and in every other arrangement it is not there at all. */
+    #halfCol { display: none; }
+
+    /*
+     * THE MAP WITH A BAR BESIDE IT. The map keeps its own width and all the
+     * height under the panel; the bar is one column of two screens — a square
+     * one at the foot and, above it, one that takes the rest of the height, so
+     * the two together always come to exactly the map's height.
+     */
+    #sideCol { display: none; }
+    #screen.is-side { align-items: flex-start; justify-content: center; }
+    #screen.is-side #sideCol { display: flex; flex: 0 0 auto; justify-content: flex-start; }
+    #screen.is-side #mapArea {
+      flex: 0 0 auto;
+      width: var(--sidemap-w-px, calc(var(--layout-side-map) * 1px * var(--ui-scale-num, 1)));
+      height: var(--sidemap-h-px, 100%);
+    }
+    #screen.is-side #sideCol .sidePane {
+      width: var(--sidebar-w-px, calc(var(--layout-side-pane) * 1px * var(--ui-scale-num, 1)));
+    }
+    #screen.is-side #sideTop { height: var(--sidebar-top-px, auto); }
+    #screen.is-side #sideBottom { height: var(--sidebar-bottom-px, auto); }
+    #map { display: block; width: 100%; height: 100%; }
+
+    /*
+     * THE BUTTON STACK — top-right of the MAP, and of nothing else.
+     *
+     * It is positioned inside #mapArea rather than on the window, so when the
+     * screen is later split (a side list opening, a panel sliding in), the map
+     * area shrinks and the buttons travel with its top-right corner by
+     * themselves. Nothing here needs to know what else is on the screen.
+     *
+     * Each button is its own PNG, drawn at its own aspect ratio: the stack
+     * fixes one dimension per shape (a row button by its height, a square one
+     * by its width) and lets the other follow, so no artwork is squashed.
+     */
+    #mapButtons, #mapButtonsBottom {
+      /* Above the "waiting" cover too: the buttons belong to the screen, not
+         to the flight, so they are there before the first fix arrives. */
+      /* The -fitted values are the knobs above after --ui-fit has been applied;
+         demo/map.ts keeps them up to date, and they fall back to the raw knob
+         before the script has run. */
+      position: absolute; right: var(--btn-edge-fitted, var(--btn-edge)); z-index: 11;
+      display: flex; flex-direction: column; align-items: flex-end;
+      gap: var(--btn-gap-fitted, var(--btn-gap));
+      pointer-events: none; /* the map keeps the wheel, the drags, everything */
+    }
+    /* Top-right stack: reads downwards from the top edge. */
+    #mapButtons { top: var(--btn-edge-fitted, var(--btn-edge)); }
+    /* Bottom-right stack: reads UPWARDS from the bottom edge, so the last
+       button in the markup is the lowest one on the screen and the stack grows
+       upwards as more are added. */
+    #mapButtonsBottom { bottom: var(--btn-edge-fitted, var(--btn-edge)); }
+    /* The top row: the enemies button on the right edge, layout beside it. */
+    /* The layout button beside the top of the icon column: aligned to their
+       TOPS, so the layout button and the aircraft icon start on the same line
+       whichever of the two is taller. */
+    #mapButtons .row { display: flex; align-items: flex-start; gap: var(--btn-gap-fitted, var(--btn-gap)); }
+    .mapBtn { display: block; user-select: none; -webkit-user-drag: none; }
+    /* A button with something drawn over it. The wrapper takes the button's
+       own box — the negative margins that discount the artwork's glow are on
+       the image, so the wrapper ends up the size the eye sees — and the dot is
+       placed from its middle. */
+    .btnWrap { position: relative; display: block; }
+    #iconNorth {
+      position: absolute; left: 50%; top: 50%;
+      width: calc(var(--iconnorth-size) * var(--ui-scale-num, 1));
+      height: calc(var(--iconnorth-size) * var(--ui-scale-num, 1));
+      margin: calc(var(--iconnorth-size) * var(--ui-scale-num, 1) / -2) 0 0
+              calc(var(--iconnorth-size) * var(--ui-scale-num, 1) / -2);
+      border-radius: 50%;
+      background: var(--iconnorth-color);
+      /* Turned to where north is, then pushed out onto the ring. */
+      transform: rotate(var(--north-deg, 0deg)) translateY(calc(-1 * var(--iconnorth-r, 0px)));
+      pointer-events: none;
+    }
+
+    /* Each button hands its two knobs to demo/map.ts as --w and --h; the values
+       themselves live in :root at the top of this file. `auto` on one side
+       means "follow the artwork", and the code works that side out. */
+    #btnLayout   { --w: var(--btn-layout-w);   --h: var(--btn-layout-h); }
+    #btnIcon     { --w: var(--btn-icon-w);     --h: var(--btn-icon-h); }
+    #btn23d      { --w: var(--btn-23d-w);      --h: var(--btn-23d-h); }
+    #btnZoom     { --w: var(--btn-zoom-w);     --h: var(--btn-zoom-h); }
+    #btnLocation { --w: var(--btn-location-w); --h: var(--btn-location-h); }
+    #btnRdr      { --w: var(--btn-rdr-w);      --h: var(--btn-rdr-h); }
+    #btnData     { --w: var(--btn-data-w);     --h: var(--btn-data-h); }
+    #btnTool     { --w: var(--btn-tool-w);     --h: var(--btn-tool-h); }
+    #btnLayers   { --w: var(--btn-layers-w);   --h: var(--btn-layers-h); }
+    #btnFriends  { --w: var(--btn-friends-w);  --h: var(--btn-friends-h); }
+    #friendList  { --w: var(--btn-friendlist-w); --h: var(--btn-friendlist-h); }
+    #btnTargets  { --w: var(--btn-targets-w);  --h: var(--btn-targets-h); }
+    #bottomPanelImg { --w: var(--btn-bottompanel-w); --h: var(--btn-bottompanel-h); }
+    /*
+     * Some of the artwork carries its own soft glow — a few per cent of
+     * transparent margin baked into the PNG — and some has none at all. Left
+     * alone, that invisible margin is added to every gap, and the stack reads
+     * as if it were spaced twice as far apart as it is. demo/map.ts measures
+     * each PNG as it loads and pulls it in by exactly its own padding, so the
+     * gaps above are between WHAT IS VISIBLE and every right edge lines up,
+     * whatever artwork is dropped into the folder next.
+     */
+    /*
+     * THE TOP ROW AND THE COLUMN UNDER IT.
+     *
+     * The row carries the layout button and, at the right edge, the aircraft
+     * icon; the rest of the map icons hang under the icon in a column, right
+     * edge to right edge. The gap between the layout button and the icon is
+     * the stack's own --btn-gap, so the layout button finds its place from the
+     * icon's width rather than from a number of its own.
+     */
+    #mapButtons .iconCol {
+      display: flex; flex-direction: column; align-items: flex-end;
+      gap: var(--btn-gap-fitted, var(--btn-gap));
+    }
+
+    /*
+     * TOP-LEFT: the friends button, and what it opens.
+     *
+     * Open, a single panel hangs under the button: the friend list, and the
+     * targets bar below it, parted by --panel-gap. The targets bar is itself a
+     * button — it swaps
+     * in place between its closed bar and its open list, and because both are
+     * drawn at the friend list's own scale, the open list arrives exactly the
+     * width of the panel, as designed.
+     */
+    #mapButtonsLeft {
+      position: absolute; top: var(--btn-edge-fitted, var(--btn-edge));
+      left: var(--btn-edge-fitted, var(--btn-edge)); z-index: 11;
+      display: flex; flex-direction: column; align-items: flex-start;
+      gap: var(--btn-gap-fitted, var(--btn-gap));
+      pointer-events: none;
+    }
+    #friendPanel {
+      display: none; flex-direction: column; align-items: center;
+      gap: var(--panel-gap-fitted, var(--panel-gap));
+    }
+    #mapButtonsLeft.is-friendsOpen #friendPanel { display: flex; }
+
+    /* The buttons that react to a click. */
+    #btnFriends, #btnTargets, #btnLocation { pointer-events: auto; cursor: pointer; }
+
+    /*
+     * A LIVE REGION ON ONE PICTURE. layout.png carries three buttons on a
+     * single plate, and only the left one does anything; splitting the file
+     * would risk a seam where the design has none. Instead the plate is left
+     * exactly as it is and a transparent hotspot is laid over its left third.
+     * Nothing about the look changes — there is nothing to see — and the other
+     * two thirds stay as inert as the rest of the artwork.
+     */
+    .hasHotspot { position: relative; display: block; line-height: 0; }
+    .hotspot {
+      position: absolute; top: 0; bottom: 0; left: 0;
+      width: var(--layout-hotspot-w);
+      margin: 0; padding: 0; border: 0; background: none;
+      pointer-events: auto; cursor: pointer;
+    }
+    .hotspot:focus-visible { outline: 2px solid #8FC2FF; outline-offset: 2px; border-radius: 6px; }
+
+    /*
+     * THE ZOOM KEYS. The artwork is one picture — a + at the top, the range in
+     * the middle, a − at the foot — so the two keys are transparent regions
+     * laid over it, one at each end. --zoom-key-h is how much of the button's
+     * height each takes; what is left in the middle, where the number is, does
+     * nothing when it is clicked.
+     */
+    .hasZoomKeys { position: relative; display: block; line-height: 0; }
+    .zoomKey {
+      position: absolute; left: 0; right: 0;
+      height: var(--zoom-key-h);
+      margin: 0; padding: 0; border: 0; background: none;
+      pointer-events: auto; cursor: pointer;
+    }
+    #btnZoomIn { top: 0; }
+    #btnZoomOut { bottom: 0; }
+    .zoomKey:focus-visible { outline: 2px solid #8FC2FF; outline-offset: -2px; border-radius: 10px; }
+
+    /*
+     * THE LAYOUT CHOOSER.
+     *
+     * Four ways the screen can be split, each drawn as a small picture of
+     * itself: panes on a plate, in the same greys as the rest of the chrome.
+     * Nothing here is an image — the diagrams are plain boxes, so they stay
+     * sharp at any size and a fifth arrangement is a few lines rather than a
+     * new export. The one in use is shown light; the other three sit back in
+     * the darker grey, which is what says "this is where you are".
+     *
+     * Every number and colour below comes from the knob block at the top of
+     * this file. `--ui-scale-num` is the factor the artwork is scaled by, so
+     * the chooser tracks the rest of the screen.
+     */
+    #layoutMenu {
+      /* Under the LEFT THIRD, not under the whole plate: centred on that
+         third's middle, which is what the button actually is. */
+      position: absolute;
+      top: calc(100% + var(--layoutmenu-y) * var(--ui-scale-num, 1));
+      left: calc(var(--layout-hotspot-w) / 2);
+      transform: translateX(calc(-50% + var(--layoutmenu-x) * var(--ui-scale-num, 1)));
+      display: none; pointer-events: auto; z-index: 12;
+      box-sizing: border-box;
+      width: calc(var(--layoutmenu-w) * var(--ui-scale-num, 1));
+      padding: calc(var(--layoutmenu-pad) * var(--ui-scale-num, 1));
+      gap: calc(var(--layoutmenu-gap) * var(--ui-scale-num, 1));
+      grid-template-columns: 1fr 1fr;
+      background: var(--layoutmenu-bg);
+      border-radius: calc(var(--layoutmenu-radius) * var(--ui-scale-num, 1));
+      box-shadow: var(--layoutmenu-shadow);
+    }
+    #layoutMenu.is-open { display: grid; }
+
+    /* One option: a frame with the panes of that arrangement inside it. */
+    .layoutOpt {
+      all: unset; box-sizing: border-box; cursor: pointer;
+      display: grid; aspect-ratio: var(--layoutcell-aspect);
+      padding: calc(var(--layoutcell-pad) * var(--ui-scale-num, 1));
+      gap: calc(var(--layoutcell-gap) * var(--ui-scale-num, 1));
+      background: var(--layoutcell-bg);
+      border: calc(var(--layoutcell-border) * var(--ui-scale-num, 1)) solid transparent;
+      border-radius: calc(var(--layoutcell-radius) * var(--ui-scale-num, 1));
+    }
+    .layoutOpt:hover { background: var(--layoutcell-bg-hover); }
+    .layoutOpt:focus-visible { outline: 2px solid #8FC2FF; outline-offset: 2px; }
+    /* The arrangement in use: light panes and a light rim around them. */
+    .layoutOpt.is-selected {
+      background: var(--layoutcell-bg-on);
+      border-color: var(--layoutcell-border-on);
+    }
+
+    /* A pane inside an option. */
+    .layoutOpt .pane {
+      background: var(--layoutpane-bg);
+      border-radius: calc(var(--layoutpane-radius) * var(--ui-scale-num, 1));
+      display: grid; place-items: center;
+      min-width: 0; min-height: 0;
+    }
+    .layoutOpt.is-selected .pane { background: var(--layoutpane-bg-on); }
+    /* The map glyph marks which pane the map itself lives in: the artwork
+       from public/icons, at its own proportions. */
+    .layoutOpt .pane .glyph {
+      display: block;
+      width: var(--layoutglyph-w);
+      max-width: calc(var(--layoutglyph-max) * var(--ui-scale-num, 1));
+      height: auto;
+      user-select: none; -webkit-user-drag: none;
+    }
+
+    /* The four arrangements, each as its own little grid. */
+    #optSide { grid-template-columns: 5fr 1fr; }
+    #optFull { grid-template-columns: 1fr; }
+    #optHalf { grid-template-columns: 1fr 1fr; }
+    #optFive { grid-template-columns: 1fr 2fr 1fr; }
+    #optFive .col {
+      display: grid; grid-template-rows: 1fr 1fr;
+      gap: calc(var(--layoutcell-gap) * var(--ui-scale-num, 1)); min-width: 0;
+    }
+    /* A button whose PNG is not in the folder yet simply does not appear. */
+    .mapBtn.is-missing { display: none; }
+
+    /*
+     * THE BOTTOM DATA PANEL — one PNG at the bottom centre of the map, with the
+     * two numbers that have to move drawn ON it: fuel and altitude. The artwork
+     * is exported WITHOUT them, so nothing has to be painted over; the readouts
+     * are positioned as a share of the panel's own box, which keeps them on
+     * their marks at any panel size and on any screen.
+     */
+    #bottomPanel {
+      position: absolute;
+      bottom: var(--bottompanel-bottom-fitted, var(--bottompanel-bottom));
+      left: 50%; transform: translateX(-50%); z-index: 11;
+      pointer-events: none;
+    }
+    /* THE BURST, over the camera's picture: held by its middle on the spot
+       the simulator gives, sized as a share of the pane, never in the way of
+       a press. It goes OVER the camera's own markings, as the thing nearest
+       the eye.
+
+       The file is drawn on BLACK rather than on nothing, so it is blended
+       with what is under it instead of being pasted over it: in `screen`,
+       black counts for nothing and only the fire shows. */
+    .camBoom {
+      position: absolute; z-index: 6;
+      transform: translate(-50%, -50%);
+      height: auto; pointer-events: none;
+      mix-blend-mode: var(--boom-blend, screen);
+    }
+    .camBoom.is-off { display: none; }
+
+    #bottomPanel.is-missing { display: none; }
+    #bottomPanelImg { display: block; }
+    /*
+     * THE SLAVE KEY. The panel is one picture and the key is drawn into it, so
+     * what reacts to a press is a clear region laid over that part of it, in
+     * shares of the panel's own box — the same way the two readouts are
+     * placed. It is the only part of the panel that takes a press, which is
+     * why the panel itself lets presses through.
+     */
+    #slaveKey {
+      position: absolute;
+      left: var(--slave-key-x); top: var(--slave-key-y);
+      width: var(--slave-key-w); height: var(--slave-key-h);
+      margin: 0; padding: 0; border: 0; background: none;
+      border-radius: 12%;
+      pointer-events: auto; cursor: pointer;
+    }
+    /*
+     * WHILE IT IS HOLDING SOMETHING the panel is swapped for the one drawn
+     * with the key lit — Bottom Panel_slave.png, the same picture in every
+     * other way. Swapping the whole panel rather than laying a lit key over
+     * the plain one is what keeps it perfectly in register: there is nothing
+     * to line up. See PANEL_PLAIN and PANEL_SLAVED in demo/map.ts.
+     */
+    .readout.is-off { display: none; }
+    .readout {
+      /* The x is where the number ENDS: it is pinned by its right edge, so a
+         figure that grows a digit grows away from its unit, not into it. */
+      position: absolute; transform: translate(-100%, -50%);
+      white-space: nowrap;
+      color: var(--readout-color);
+      font-family: 'Roboto', system-ui, sans-serif;
+      font-weight: var(--readout-weight);
+      /* Figures of equal width: the number changes without the text shuffling. */
+      font-variant-numeric: tabular-nums;
+    }
+    #fuelReadout {
+      left: var(--readout-fuel-x); top: var(--readout-fuel-y);
+      font-size: var(--readout-fuel-size-fitted, var(--readout-fuel-size));
+    }
+    #altReadout {
+      left: var(--readout-alt-x); top: var(--readout-alt-y);
+      font-size: var(--readout-alt-size-fitted, var(--readout-alt-size));
+    }
+
+    /* Shown until the first position arrives from the simulator window. It
+       covers the map only — the panel is part of the screen from the start. */
+    #wait {
+      position: absolute; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center;
+      background: #0B1220; font-size: 20px; color: #98A6B9; text-align: center; padding: 24px;
+    }
+    #wait.is-hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div id="topBar">
+    <img id="topPanel" src="./icons/Top%20Panel.png" alt="">
+    <!-- The clock in the panel's first box: the artwork's own figures are
+         covered and these are written in their place, live. -->
+    <div id="topClock" aria-hidden="true">
+      <span id="clockH">23</span><span id="clockM">25</span><span id="clockS">29</span>
+    </div>
+  </div>
+  <div id="screen">
+    <!-- The two screens on the left of the map. Each is a SLOT: what it shows
+         is chosen from the button in its own top-left corner, and the markup
+         inside is built to match (see the pane kinds in demo/map.ts). The
+         data-pane attribute is only what it opens on. -->
+    <div class="sideCol" id="leftCol">
+      <div class="sidePane" data-pane="cam"></div>
+      <div class="sidePane" data-pane="weapon"></div>
+    </div>
+
+  <div id="mapArea">
+    <canvas id="map"></canvas>
+
+    <div id="mapButtons">
+      <div class="row">
+        <span class="hasHotspot">
+          <img class="mapBtn wide" id="btnLayout" src="./icons/layout.png" alt="Layout">
+          <button class="hotspot" id="btnLayoutLeft" type="button" aria-label="Layout"
+                  aria-haspopup="true" aria-expanded="false"></button>
+
+          <!-- The four arrangements. The map glyph marks the pane the map is in. -->
+          <div id="layoutMenu" role="menu" aria-label="Screen layout">
+            <button class="layoutOpt" id="optSide" type="button" role="menuitemradio"
+                    data-layout="side" aria-checked="false" aria-label="Map with a side panel">
+              <span class="pane"><img class="glyph" src="./icons/icon_map.png" alt=""></span>
+              <span class="pane"></span>
+            </button>
+            <button class="layoutOpt" id="optFull" type="button" role="menuitemradio"
+                    data-layout="full" aria-checked="true" aria-label="Map full screen">
+              <span class="pane"><img class="glyph" src="./icons/icon_map.png" alt=""></span>
+            </button>
+            <button class="layoutOpt" id="optFive" type="button" role="menuitemradio"
+                    data-layout="five" aria-checked="false" aria-label="Map between four panels">
+              <span class="col"><span class="pane"></span><span class="pane"></span></span>
+              <span class="pane"><img class="glyph" src="./icons/icon_map.png" alt=""></span>
+              <span class="col"><span class="pane"></span><span class="pane"></span></span>
+            </button>
+            <button class="layoutOpt" id="optHalf" type="button" role="menuitemradio"
+                    data-layout="half" aria-checked="false" aria-label="Map beside one panel">
+              <span class="pane"><img class="glyph" src="./icons/icon_map.png" alt=""></span>
+              <span class="pane"></span>
+            </button>
+          </div>
+        </span>
+        <!-- The map icons, in one column headed by the aircraft icon (with
+             the live north dot riding on the pale ring drawn into it). The
+             layout button sits beside the column's top, one gap to its left. -->
+        <div class="iconCol">
+          <span class="btnWrap">
+            <img class="mapBtn square" id="btnIcon" src="./icons/icon.png" alt="Aircraft icon">
+            <i id="iconNorth" aria-hidden="true"></i>
+          </span>
+          <img class="mapBtn tall" id="btn23d" src="./icons/2:3d.png" alt="2D / 3D">
+          <!-- The zoom control: one picture with a + key at the top and a −
+               key at the foot, each a live region over the artwork. -->
+          <span class="hasZoomKeys">
+            <img class="mapBtn square" id="btnZoom" src="./icons/zoom%20in:out_30.png" alt="Zoom in / out">
+            <button class="zoomKey" id="btnZoomIn" type="button" aria-label="Zoom in"></button>
+            <button class="zoomKey" id="btnZoomOut" type="button" aria-label="Zoom out"></button>
+          </span>
+          <img class="mapBtn square" id="btnLocation" src="./icons/Location%20on%20the%20map.png" alt="Location on the map">
+        </div>
+      </div>
+    </div>
+
+    <div id="mapButtonsLeft">
+      <img class="mapBtn" id="btnFriends" src="./icons/Friends%20and%20targets_Close.png" alt="Friends and targets">
+      <div id="friendPanel">
+        <img class="mapBtn" id="friendList" data-match="btnFriends" src="./icons/Friend_list_open.png" alt="Friends">
+        <img class="mapBtn" id="btnTargets" data-scale="friendList" src="./icons/Targets_Close.png" alt="Targets">
+      </div>
+    </div>
+
+    <div id="mapButtonsBottom">
+      <img class="mapBtn" id="btnRdr" src="./icons/RDR.png" alt="Radar">
+      <img class="mapBtn tall" id="btnData" src="./icons/data.png" alt="Data">
+      <img class="mapBtn square" id="btnTool" src="./icons/Tool.png" alt="Tool">
+      <img class="mapBtn square" id="btnLayers" src="./icons/Layers.png" alt="Layers">
+    </div>
+
+    <div id="bottomPanel">
+      <img class="mapBtn" id="bottomPanelImg" src="./icons/Bottom%20Panel.png" alt="">
+      <!-- Only the figures: the panel's own artwork carries "lb", "ft" and the lamp. -->
+      <div class="readout" id="fuelReadout"><span id="fuelNum">13,900</span></div>
+      <div class="readout" id="altReadout"><span id="altNum">0</span></div>
+      <!-- The Slave key: a clear region over that part of the artwork. The
+           lit key is not laid over this one — the whole panel is swapped for
+           the picture that has it lit, so the two can never fall out of
+           register. -->
+      <button id="slaveKey" type="button" aria-label="Slave the camera to the chosen mark"></button>
+    </div>
+
+    <div id="wait">Waiting for the simulator…<br>Start the flight in the simulator window.</div>
+  </div>
+
+    <!-- Half and half: the camera screen on the right of the map. -->
+    <div class="sideCol" id="halfCol">
+      <!-- Half and half: one big square beside the map, and it is a SLOT like
+           the four small ones — the button in its corner chooses what is on
+           it. It opens on the camera, which is the same screen as the one in
+           the five-way arrangement: the picture is drawn into every camera
+           canvas that is on show, so whichever arrangement is up gets it, at
+           whatever size it has there. -->
+      <div class="sidePane" data-pane="cam"></div>
+    </div>
+
+    <!-- The map with a bar beside it: the list above, the camera below. Both
+         have artwork of their own for this arrangement — the 3_layout files,
+         drawn at the shapes this bar gives them. -->
+    <div class="sideCol" id="sideCol">
+      <div class="sidePane" id="sideTop">
+        <img src="./icons/list_3_layout.png" alt="List">
+      </div>
+      <div class="sidePane camPane" id="sideBottom">
+        <canvas class="camView"></canvas>
+        <img class="camOverlay" src="./icons/cam_3_layout.png" alt="Camera">
+      </div>
+    </div>
+
+    <!-- …and two on its right. -->
+    <!-- The right-hand column is the one that can run TALL: while its top
+         screen is the targets list, the list takes the height of both and the
+         screen under it is not there at all. Choose anything else on it and
+         the column goes back to two, with the spare screen under it. -->
+    <div class="sideCol" id="rightCol">
+      <div class="sidePane" data-pane="targets"></div>
+      <div class="sidePane" data-pane="radar"></div>
+    </div>
+  </div>
+
+  <script type="module" src="./demo/map.ts"></script>
+</body>
+</html>

@@ -1,47 +1,31 @@
 /**
- * Israel Flight Simulator — a ring-course game built on the threetiles engine.
+ * Israel Flight Simulator — free flight over the Eilat mountains, built on the
+ * threetiles engine.
  *
- * SESSION FLOW
- *   1. The login screen collects the participant's name and id, and whether
- *      they fly the NORTH region (Hula valley / Bekaa) or the SOUTH one (Eilat
- *      mountains). The world is anchored on the chosen region and its terrain
- *      streams while the details are typed.
- *   2. "Start session" drops the aircraft SPAWN_BACK metres behind the course,
- *      with a lead-in to settle down. Nothing is measured yet.
- *   3. Crossing the wide amber START GATE on the centerline begins the run:
- *      the clock starts and everything from there is recorded.
- *   4. **Esc** stops the route. The simulator freezes exactly where it is and
- *      asks whether to move on. "No" resumes from the identical state; "Yes"
- *      banks the route's row and loads the next route of the same region,
- *      which again starts far back with its own start gate.
- *   5. After the third route a summary appears with a button that downloads
- *      the session as a CSV — one row per route (name, id, region, route,
- *      seconds from the gate to Esc, crashes, score, rings passed/total,
- *      completed). The same export is also on the **Esc** dialog, so a session
- *      that ends early still hands over everything measured: the banked routes
- *      plus the one in the air (completed = 0). That dialog shows NO numbers —
- *      the participant must not see their own time, score or rings.
+ * ONE fixed start point in the SOUTH: the aircraft spawns on the course
+ * centerline and from there the pilot flies wherever they like. Nothing is
+ * scored, timed or exported and there are no rings; the centerline survives
+ * only because it is what the spawn (and the "continue" recovery) is aimed
+ * along — and it is what the MOVING MAP will later draw as the route.
  *
- * THE COURSE
- * Every ring faces straight down the course (its opening squares up to the
- * aircraft's nose); the rings only "crab" left/right and up/down along the way,
- * they never rotate away. Rings are scored like a target board: a large ring is
- * worth up to 5 points and a small precision ring up to 10, but only a crossing
- * through the middle pays the full amount — it falls off towards the rim. A red
- * square hazard costs 10 wherever it is entered. The score, rings and route are
- * shown at the top; a fighter-style HUD (W datum, flight path marker, pitch
- * ladder) helps aim through each hoop.
+ * The MOVING MAP (map.html) runs on the second screen: it opens with the
+ * flight and follows it live — see mapLink.ts for the link between the two.
  *
  * Keyboard: **A/D** roll, **Z/C** yaw, **W/S** pitch, **+/-** throttle,
- * **Esc** stop the route, **1/2/3** jump to a route (a manual override — it
- * does not record a row), **R** restart the route, **E** continue: after a
- * crash from the crash spot (costs CRASH_PENALTY points), and in flight a
- * free attitude recovery that keeps position, speed and score. Touch:
- * one-finger drag steers (right = bank right, down = nose up), two-finger
- * pinch is the throttle, tap resets after a crash.
- */import * as THREE from 'three';
+ * **M** reopen the moving map,
+ * **R** respawn at the start point, **E** continue: after a crash from the
+ * crash spot, and in flight a free attitude recovery that keeps position and
+ * speed. Touch: one-finger drag steers (right = bank right, down = nose up),
+ * two-finger pinch is the throttle, tap resets after a crash.
+ */
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { Terrain, ZOOM_LEVELS, type WorldConfig, worldFromLatLon } from '../src';
 import { FM, SPEED_RULE, applyStick, speedRuleTrimThrottle, stepDynamics } from './flight';
+import {
+  MAP_CHANNEL, type MapFix, type CamFrame, type SlaveOrder, type FireOrder,
+  TRAIL_EVERY, openMapWindow,
+} from './mapLink';
 
 /** Sky/fog color (raylib's SKYBLUE, for parity with the original demo). */
 const SKY = new THREE.Color().setRGB(70 / 255, 130 / 255, 190 / 255, THREE.SRGBColorSpace);
@@ -85,296 +69,36 @@ const GP_INVERT_ROLL = false;
 const GP_INVERT_PITCH = false;
 
 /**
- * Two REGIONS, picked on the login screen: north (the Hula valley up the Bekaa)
- * and south (the Eilat mountains), each holding the same three routes in a
- * different place. The world is anchored at the region's own anchor point —
- * Mercator scale changes with latitude, so one anchor cannot serve both. The
- * region is therefore chosen before the run starts, not during it.
- */
-type RegionId = 'north' | 'south';
-
-/** Ring size → radius (m). Bigger = easier (+5); small/precision = +10. HAZ = red. */
-type RingSize = 'XL' | 'L' | 'M' | 'S' | 'XS' | 'HAZ';
-const SIZE_RADIUS: Record<RingSize, number> = { XL: 205, L: 140, M: 92, S: 56, XS: 34, HAZ: 115 };
-const HAZARD_POINTS = -10; // red ring flown through
-
-/**
- * THE RING TABLES — one row per ring, easy to hand-edit. There is one table
- * per route (RINGS_1 / RINGS_2 / RINGS_3 below) and they are independent, so
- * editing one changes only that route. Fields:
- *   gap  = distance (m) along the course from the PREVIOUS ring (gap 0 ≈ a ring
- *          stacked/beside the previous one at the same station — a pair).
- *   side = offset from the centerline: + = right, − = left (m).
- *   up   = offset from the centerline: + = above, − = below (m).
- *   size = XL | L | M | S | XS  (green) or HAZ (red).
- *   kind = 'green' (fly through, scores) or 'red' (avoid, −10 if entered).
- * Green points come from size automatically (XL/L/M = up to +5, S/XS = up to
- * +10) and are then scaled by how centred the crossing was — see
- * BULLSEYE_FRACTION / RIM_SHARE.
- * Reorder / edit / add / delete rows freely; that route updates directly. The
- * gaps are relative, so they are stretched to fit whatever length the route's
- * start/end coordinates give — a table works at any route length.
- */
-interface RingSpec { gap: number; side: number; up: number; size: RingSize; kind: 'green' | 'red' }
-/** Where the FIRST ring sits (m from the course start). Independent of the
- *  spawn: moving the spawn back does not move the rings. The first row's gap in
- *  the tables below is ignored — this places it. */
-const FIRST_RING_ALONG = 2150;
-/** How far (m) BEHIND the course start the aircraft spawns. This is the only
- *  lead-in knob: raise it to give the participant more room to settle before
- *  reaching the start gate; the course itself does not move. */
-const SPAWN_BACK = 2500;
-
-/**
- * START GATE — a single wide gate on the centerline, flown through shortly
- * before the first ring. It scores nothing: crossing it is what starts the run
- * for measurement purposes (see `courseStartedAt`), so every participant is
- * timed from the same point in space rather than from the spawn.
- */
-/** How far (m) before the FIRST RING the start gate sits. */
-const START_GATE_BACK = 900;
-/** Half-width and half-height (m) of the start gate's rectangle. It is drawn
- *  as a wide rectangular frame rather than a ring so it reads as a gateway, and
- *  it is deliberately huge: it should be impossible to miss or to have to aim
- *  for. Widening it costs nothing; raising the height lowers its bottom edge
- *  towards the ground, so re-check the terrain after changing it. */
-const START_GATE_HALF_W = 520;
-const START_GATE_HALF_H = 210;
-/** Lift (m) of the gate's centre above the centerline, if the bottom edge needs
- *  to clear rising ground. */
-const START_GATE_UP = 60;
-/** The gate's frame bars (m). Thin: at this size the frame is already over a
- *  kilometre wide, so a heavy bar swallows the view through the opening. */
-const START_GATE_BAR = 11;
-/** How far (m) the two posts drop below the frame, towards the ground. They are
- *  what makes the gate read as a GATE — a flat frame seen from the side is a
- *  line, while the posts stay solid from any angle and plant it in the
- *  landscape, so circling around before the start never loses it. Deliberately
- *  longer than the gate's height above the valley floor: whatever sticks into
- *  the terrain is hidden by it, so the posts end IN the ground rather than
- *  stopping in mid-air. */
-const START_GATE_POST_DROP = 2600;
-/** Post radius (m) — matched to the frame bar, so the gate reads as one piece. */
-const START_GATE_POST_R = 11;
-/** Cap height (m) of the "START" banner, which sits just clear of the top bar. */
-const START_GATE_LABEL_H = 100;
-/** Route 1's rings — the original course. */
-const RINGS_1: RingSpec[] = [
-  { gap: 0, side: 38, up: 126, size: 'M', kind: 'green' },
-  { gap: 0, side: -211, up: 186, size: 'HAZ', kind: 'red' },
-  { gap: 3843, side: -198, up: -120, size: 'S', kind: 'green' },
-  { gap: 0, side: 15, up: -60, size: 'HAZ', kind: 'red' },
-  { gap: 0, side: -411, up: -60, size: 'HAZ', kind: 'red' },
-  { gap: 1815, side: 250, up: 170, size: 'L', kind: 'green' },
-  { gap: 2993, side: -410, up: -180, size: 'XL', kind: 'green' },
-  { gap: 4066, side: 200, up: 130, size: 'XS', kind: 'green' },
-  { gap: 0, side: 391, up: 160, size: 'HAZ', kind: 'red' },
-  { gap: 0, side: 9, up: 90, size: 'HAZ', kind: 'red' },
-  { gap: 2107, side: -360, up: 60, size: 'S', kind: 'green' },
-  { gap: 0, side: -147, up: 80, size: 'HAZ', kind: 'red' },
-  { gap: 0, side: -573, up: 120, size: 'HAZ', kind: 'red' },
-  { gap: 2174, side: 280, up: 240, size: 'L', kind: 'green' },
-  { gap: 3888, side: -440, up: 10, size: 'S', kind: 'green' },
-  { gap: 0, side: -227, up: 80, size: 'HAZ', kind: 'red' },
-  { gap: 0, side: -653, up: 20, size: 'HAZ', kind: 'red' },
-  { gap: 2611, side: 190, up: 210, size: 'L', kind: 'green' },
-  { gap: 1643, side: -330, up: -140, size: 'L', kind: 'green' },
-  { gap: 3357, side: 250, up: 170, size: 'M', kind: 'green' },
-  { gap: 0, side: 1, up: 230, size: 'HAZ', kind: 'red' },
-  { gap: 4521, side: -410, up: -230, size: 'XL', kind: 'green' },
-  { gap: 2620, side: 200, up: 130, size: 'L', kind: 'green' },
-];
-/**
- * Route 2's rings: route 1 mirrored left↔right, with the vertical offsets
- * halved — a flatter course that banks the other way. Same 23 stations and the
- * same mix of sizes as route 1, so the maximum score is identical.
- */
-const RINGS_2: RingSpec[] = [
-  { gap: 0, side: -38, up: 63, size: 'M', kind: 'green' },
-  { gap: 0, side: 211, up: 93, size: 'HAZ', kind: 'red' },
-  { gap: 3267, side: 198, up: -70, size: 'S', kind: 'green' },
-  { gap: 0, side: -15, up: -55, size: 'HAZ', kind: 'red' },
-  { gap: 0, side: 411, up: -90, size: 'HAZ', kind: 'red' },
-  { gap: 2087, side: -250, up: 85, size: 'L', kind: 'green' },
-  { gap: 2544, side: 410, up: -115, size: 'XL', kind: 'green' },
-  { gap: 4676, side: -200, up: 65, size: 'XS', kind: 'green' },
-  { gap: 0, side: -391, up: 80, size: 'HAZ', kind: 'red' },
-  { gap: 0, side: -9, up: 45, size: 'HAZ', kind: 'red' },
-  { gap: 1791, side: 360, up: -95, size: 'S', kind: 'green' },
-  { gap: 0, side: 147, up: -80, size: 'HAZ', kind: 'red' },
-  { gap: 0, side: 573, up: -115, size: 'HAZ', kind: 'red' },
-  { gap: 2500, side: -280, up: 120, size: 'L', kind: 'green' },
-  { gap: 3305, side: 440, up: -55, size: 'S', kind: 'green' },
-  { gap: 0, side: 227, up: -40, size: 'HAZ', kind: 'red' },
-  { gap: 0, side: 653, up: -75, size: 'HAZ', kind: 'red' },
-  { gap: 3003, side: -190, up: 105, size: 'L', kind: 'green' },
-  { gap: 1397, side: 330, up: -70, size: 'L', kind: 'green' },
-  { gap: 3861, side: -250, up: 85, size: 'M', kind: 'green' },
-  { gap: 0, side: -1, up: 115, size: 'HAZ', kind: 'red' },
-  { gap: 5199, side: 410, up: -115, size: 'XL', kind: 'green' },
-  { gap: 2227, side: -200, up: 65, size: 'L', kind: 'green' },
-];
-/**
- * Route 3's rings: the lateral offsets pulled ~30% toward the centerline and
- * the vertical offsets widened ~40% — less weaving, more climbing and diving.
- * Again the same 23 stations and sizes, so all three routes score the same.
- */
-const RINGS_3: RingSpec[] = [
-  { gap: 0, side: 27, up: 176, size: 'M', kind: 'green' },
-  { gap: 0, side: -148, up: 260, size: 'HAZ', kind: 'red' },
-  { gap: 4419, side: -139, up: -196, size: 'S', kind: 'green' },
-  { gap: 0, side: 10, up: -154, size: 'HAZ', kind: 'red' },
-  { gap: 0, side: -288, up: -160, size: 'HAZ', kind: 'red' },
-  { gap: 1543, side: 175, up: 238, size: 'L', kind: 'green' },
-  { gap: 3442, side: -287, up: -140, size: 'XL', kind: 'green' },
-  { gap: 3456, side: 140, up: 182, size: 'XS', kind: 'green' },
-  { gap: 0, side: 274, up: 224, size: 'HAZ', kind: 'red' },
-  { gap: 0, side: 6, up: 126, size: 'HAZ', kind: 'red' },
-  { gap: 2423, side: -252, up: -266, size: 'S', kind: 'green' },
-  { gap: 0, side: -103, up: -110, size: 'HAZ', kind: 'red' },
-  { gap: 0, side: -401, up: -90, size: 'HAZ', kind: 'red' },
-  { gap: 1848, side: 196, up: 336, size: 'L', kind: 'green' },
-  { gap: 4471, side: -308, up: -154, size: 'S', kind: 'green' },
-  { gap: 0, side: -159, up: -112, size: 'HAZ', kind: 'red' },
-  { gap: 0, side: -457, up: -210, size: 'HAZ', kind: 'red' },
-  { gap: 2219, side: 133, up: 294, size: 'L', kind: 'green' },
-  { gap: 1889, side: -231, up: 30, size: 'L', kind: 'green' },
-  { gap: 2853, side: 175, up: 238, size: 'M', kind: 'green' },
-  { gap: 0, side: 1, up: 322, size: 'HAZ', kind: 'red' },
-  { gap: 3843, side: -287, up: -160, size: 'XL', kind: 'green' },
-  { gap: 3013, side: 140, up: 182, size: 'L', kind: 'green' },
-];
-
-/**
- * THE ROUTES, three per region. Keys 1 / 2 / 3 switch between them in flight
- * (after the participant has logged in); each switch rebuilds the rings and
- * starts that route's score from zero — the participant never re-enters their
- * details.
+ * THE COURSE — one fixed start point, and the direction the aircraft is
+ * launched in. `start`/`end` are the centerline's endpoints (`alt` = metres
+ * above sea level); the aircraft spawns SPAWN_BACK metres behind `start`,
+ * aimed straight down the line towards `end`.
  *
- *   start / end = the course centerline's endpoints. `alt` is height above sea
- *     level (m): the centerline runs straight between them, so the pair also
- *     sets how the course climbs. The last ring lands exactly on `end`, and the
- *     altitudes are chosen so the rings clear the terrain in between.
- *   rings = that route's own ring table (RINGS_1 / RINGS_2 / RINGS_3, above).
- *     The tables are SHARED by both regions, so editing one changes that route
- *     in the north and in the south alike.
+ * The start is the given coordinate on the HERMON's western slopes, high
+ * ground above the Hula valley. The line runs NORTH-WEST (bearing 315°) rather than due
+ * north — deliberately: on the moving map the symbol is always nose-up, so a
+ * course straight up the meridian would park the north marker permanently on
+ * the aircraft's nose, where it says nothing. Off the meridian by 45°, north
+ * sits out on the symbol's right and the marker reads as the instrument it is.
+ * Changing `end` changes the launch heading: the aircraft is aimed straight
+ * down the start → end line.
  */
 interface GeoPoint { lat: number; lon: number; alt: number }
-interface Route { name: string; start: GeoPoint; end: GeoPoint; rings: RingSpec[] }
-interface Region { id: RegionId; label: string; anchor: { lat: number; lon: number }; routes: Route[] }
-
-const REGIONS: Record<RegionId, Region> = {
-  north: {
-    id: 'north',
-    label: 'North',
-    anchor: { lat: 33.24206139858175, lon: 35.57500193888974 },
-    routes: [
-      {
-        // North of Kiryat Shmona -> north of Lake Qaraoun. The original course.
-        name: 'Route 1',
-        start: { lat: 33.24206139858175, lon: 35.57500193888974, alt: 600 },
-        end: { lat: 33.74957984835403, lon: 35.62881758358311, alt: 1800 },
-        rings: RINGS_1,
-      },
-      {
-        // Starts high on the Hermon's western slopes, runs north up the Bekaa.
-        name: 'Route 2',
-        start: { lat: 33.30315436941508, lon: 35.71088091141093, alt: 1820 },
-        end: { lat: 33.6213440989546, lon: 35.74088402818536, alt: 1800 },
-        rings: RINGS_2,
-      },
-      {
-        // Same start as route 1, but ends further east and ~1200 m higher up.
-        name: 'Route 3',
-        start: { lat: 33.24206139858175, lon: 35.57500193888974, alt: 600 },
-        end: { lat: 33.683902024452436, lon: 35.69045560640456, alt: 2300 },
-        rings: RINGS_3,
-      },
-    ],
-  },
-  south: {
-    id: 'south',
-    label: 'South',
-    anchor: { lat: 29.639129635266595, lon: 34.92709481959459 },
-    // All three southern routes leave the SAME point in the Eilat mountains:
-    // route 1 runs 25 km north, route 2 25 km east, route 3 25 km west. The
-    // start altitudes differ because the ground east of the start is far higher.
-    routes: [
-      {
-        name: 'Route 1',
-        start: { lat: 29.639129635266595, lon: 34.92709481959459, alt: 1100 },
-        end: { lat: 29.86370742901435, lon: 34.92709481959459, alt: 1200 },
-        rings: RINGS_1,
-      },
-      {
-        name: 'Route 2',
-        start: { lat: 29.639129635266595, lon: 34.92709481959459, alt: 1500 },
-        end: { lat: 29.6391296352666, lon: 35.18548046458278, alt: 1500 },
-        rings: RINGS_2,
-      },
-      {
-        name: 'Route 3',
-        start: { lat: 29.639129635266595, lon: 34.92709481959459, alt: 1200 },
-        end: { lat: 29.6391296352666, lon: 34.66870917460641, alt: 1300 },
-        rings: RINGS_3,
-      },
-    ],
-  },
-};
-
-/** The region being flown; chosen on the login screen before the run starts. */
-let regionId: RegionId = 'north';
-const region = (): Region => REGIONS[regionId];
-const routes = (): Route[] => REGIONS[regionId].routes;
-
-/** The route currently flown — index into the active region's routes. */
-let routeIndex = 0;
-
-const COLOR_TARGET = 0x00e5ff; // bright cyan-blue — fly through these (stands out against the sky)
-const COLOR_HAZARD = 0xe23a3a; // red — avoid these (drawn as squares)
-const COLOR_START = 0xffc53d; // amber — the start gate, before it is crossed
-const COLOR_START_DONE = 0x6b5518; // dimmed amber — start gate already crossed
-const COLOR_DONE = 0x24507f; // dimmed blue — a target already flown through
-const COLOR_MISS = 0xb23b3b; // a green target that was missed
-
-/**
- * TARGET-BOARD SCORING — a green ring's award depends on HOW CLOSE to its
- * centre you cross, like the rings of a target. Crossing anywhere inside
- * BULLSEYE_FRACTION of the radius scores the ring's full value; from there the
- * award falls off linearly to RIM_SHARE of it right at the rim. So a ring's
- * listed points are its best case, reached only by flying through the middle.
- * Red hazards are unaffected — entering one costs the full HAZARD_POINTS
- * wherever it is crossed.
- */
-const BULLSEYE_FRACTION = 0.2; // inner 20% of the radius = a perfect hit
-const RIM_SHARE = 0.3; // share of the full value awarded at the very rim
-
-/** Scoring. Missing a green ring costs nothing; red hazards use HAZARD_POINTS. */
-const CRASH_PENALTY = -30; // crashed and continued with E
-
-/**
- * Progressive reveal: only the nearest rings ahead are drawn solid; the rest
- * stay transparent and fade in as the aircraft advances — so the course can't
- * be scanned and pre-planned far ahead. `FULL` nearest are opaque; they fade to
- * invisible by the `VIS`-th ahead.
- */
-const REVEAL_FULL = 3;
-const REVEAL_VIS = 6;
-/**
- * Ring opacity — 0 = invisible, 1 = fully solid. Set separately for the blue
- * circles and the red squares. "next" = the ring(s) you must fly through now
- * (the nearest station not yet passed); "later" = every ring after them.
- *   outline = the torus / square frame,  fill = the tinted inside.
- */
-const OPACITY = {
-  blue: {
-    next:  { outline: 1,    fill: 0.75 },
-    later: { outline: 0.35, fill: 0.05 },
-  },
-  red: {
-    next:  { outline: 1,    fill: 0.61 },
-    later: { outline: 0.35, fill: 0.05 },
-  },
+const COURSE = {
+  name: 'Kiryat Shmona → Lake Qaraoun',
+  /** The world is anchored here. Mercator scale changes with latitude, so the
+   *  anchor sits on the course itself. */
+  anchor: { lat: 33.207400, lon: 35.569500 },
+  /** WHERE THE FLIGHT BEGINS — what used to be 3A, north of Kiryat Shmona.
+   *  The two legs that led up to it are gone, so this point is 1A now and
+   *  everything after it has moved up two numbers. */
+  start: { lat: 33.241736, lon: 35.584795, alt: 1000 } as GeoPoint,
+  /** THE FAR END of the course, 45 km away on a bearing of 023.5°. It is what
+   *  the aircraft launches towards and what every turn in ROUTE_PLAN is
+   *  measured from, so swinging it swings the whole route: it was 017°, which
+   *  ran the route down the WEST side of Lake Qaraoun, and the six and a half
+   *  degrees added here carry the line over the water instead. */
+  end: { lat: 33.612448, lon: 35.777523, alt: 1000 } as GeoPoint,
 };
 
 // -- DOM ---------------------------------------------------------------------
@@ -382,19 +106,6 @@ const OPACITY = {
 const canvas = document.getElementById('threetiles') as HTMLCanvasElement;
 const loadingEl = document.getElementById('loading')!;
 const crashEl = document.getElementById('crash')!;
-const scorebarEl = document.getElementById('scorebar')!;
-const scoreValEl = document.getElementById('scoreVal')!;
-const ringsValEl = document.getElementById('ringsVal')!;
-const routeValEl = document.getElementById('routeVal')!;
-const pauseEl = document.getElementById('pause')!;
-const pauseTitleEl = document.getElementById('pauseTitle')!;
-const pauseYesEl = document.getElementById('pauseYes') as HTMLButtonElement;
-const pauseNoEl = document.getElementById('pauseNo') as HTMLButtonElement;
-const finishEl = document.getElementById('finish')!;
-const finishInfoEl = document.getElementById('finishInfo')!;
-const downloadCsvEl = document.getElementById('downloadCsv') as HTMLButtonElement;
-const pauseCsvEl = document.getElementById('pauseCsv') as HTMLButtonElement;
-const regionBtns = Array.from(document.querySelectorAll<HTMLButtonElement>('.segBtn'));
 const spdTapeEl = document.getElementById('spdTape') as HTMLCanvasElement;
 const altTapeEl = document.getElementById('altTape') as HTMLCanvasElement;
 const compassEl = document.getElementById('compass') as HTMLCanvasElement;
@@ -402,8 +113,6 @@ const compassCtx = compassEl.getContext('2d')!;
 const popEl = document.getElementById('pop')!;
 const attitudeEl = document.getElementById('attitude') as HTMLCanvasElement;
 const attitudeCtx = attitudeEl.getContext('2d')!;
-const designatorEl = document.getElementById('designator') as HTMLCanvasElement;
-const designatorCtx = designatorEl.getContext('2d')!;
 const loginEl = document.getElementById('login')!;
 const loginForm = document.getElementById('loginForm') as HTMLFormElement;
 const startBtn = loginForm.querySelector('button[type="submit"]') as HTMLButtonElement;
@@ -420,9 +129,410 @@ renderer.setClearColor(SKY);
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(60, 1, 1, 400_000);
 
-/** World config for a region: anchored on its own point, with extra detail. */
-function worldFor(r: Region): WorldConfig {
-  const w = worldFromLatLon(r.anchor.lat, r.anchor.lon);
+/**
+ * ══ THE BELLY CAMERA ════════════════════════════════════════════════════════
+ *
+ * A second camera, bolted under the aircraft and looking CAM_PITCH degrees
+ * below the nose. It sees the same world through the same engine — there is
+ * only one set of terrain tiles, and this costs one more pass over it — and
+ * its picture is sent to the map window, which draws it in the camera pane.
+ *
+ * The frame is taken by rendering this view into a corner of the simulator's
+ * own canvas, copying that corner away, and then drawing the pilot's view over
+ * the top. Both happen inside one animation frame, so nothing of it is ever
+ * seen on the simulator's screen.
+ *
+ * IT IS ON A STABILISER. The camera follows the aircraft's heading and holds
+ * everything else steady: it looks CAM_PITCH_DEG below the HORIZON, not below
+ * the nose, and its own horizon stays level however the aircraft banks or
+ * pitches. Set CAM_STABILISED to false and it is bolted to the airframe
+ * instead, rolling and pitching with it.
+ */
+const CAM_ON = true;
+const CAM_STABILISED = true; // false = bolted to the airframe
+/**
+ * ── POINTING IT, AND ZOOMING IT ────────────────────────────────────────────
+ *
+ * These two together are the zoom, and the first matters more than the second.
+ *
+ * CAM_PITCH_DEG is how far BELOW THE HORIZON it looks, and that is what sets
+ * how far away the ground it is looking at actually is. From 6,000 ft:
+ *
+ *      3°  →  the ground 35 km off        20°  →  5.3 km off
+ *     10°  →  10.5 km off                 45°  →  2.6 km off
+ *
+ * Nothing 35 km away can be made clear by any lens, which is why a narrow
+ * view at a shallow angle reads as "smaller picture" rather than "closer".
+ *
+ * CAM_FOV_DEG is the lens: how wide a slice of that it takes in. Halving it
+ * doubles the size of everything in the picture.
+ *
+ * CAM_PX is how many pixels the picture is drawn with. The pane it ends up in
+ * is 570 of them wide in the five-way arrangement and 1,140 in the half-way
+ * one, so anything under that is being stretched, and a zoomed-in picture
+ * shows that stretching plainly. It costs a little to raise.
+ *
+ * The launcher is about 25 m long. These settings put it at roughly a
+ * thirtieth of the picture's width from 5 km off — small, but plainly a
+ * vehicle, which is what a sensor at that range would give you.
+ */
+const CAM_PITCH_DEG = 2;    // how far below the horizon it looks
+const CAM_FOV_DEG = 8;       // how wide it sees
+const CAM_PX = 768;          // the picture's size, square, in CSS px
+const CAM_FPS = 15;          // frames a second sent to the map
+
+/**
+ * ── STEERING IT FROM THE THROTTLE ──────────────────────────────────────────
+ *
+ * Four buttons on the throttle swing the camera about while they are held:
+ * two walk it from the horizon down past straight-down and on behind the
+ * aircraft, two swing it to the sides. Letting go leaves it where it was
+ * pointed, which is how a real sensor behaves.
+ *
+ * The numbers below are the button numbers the THROTTLE ITSELF carries — b2
+ * is 2 here, and so on. (The login screen logs every button pressed with the
+ * number the browser reports, so a throttle that counts differently can be
+ * matched to it in a moment.)
+ *
+ * Should a pair ever feel the wrong way round on another aircraft or another
+ * throttle, the two switches below turn that pair over without touching
+ * anything else.
+ */
+const CAM_BTN_LEFT = 2;      // b2
+const CAM_BTN_FORWARD = 3;   // b3 — towards the horizon
+const CAM_BTN_RIGHT = 4;     // b4
+const CAM_BTN_BACK = 5;      // b5 — further down, and on behind
+const CAM_BTN_CENTRE = [6, 7];  // b6 or b7 — back to where it rests
+const CAM_PAN_INVERT_SIDE = false;
+const CAM_PAN_INVERT_DOWN = false;
+const CAM_PAN_RATE = 45;     // degrees a second while a button is held
+const CAM_DOWN_MIN = -5;     // it may look this far ABOVE the horizon…
+const CAM_DOWN_MAX = 150;    // …and this far past it, which is behind
+const CAM_SIDE_MAX = 180;    // how far round to each side
+
+/** Where it is pointed now, as a turn away from where it rests. */
+let camPanDown = 0;
+let camPanSide = 0;
+
+/** Called every frame: the buttons swing the camera while they are held. */
+function panCamera(dt: number): void {
+  const { throttle } = warthogPads();
+  if (!throttle) return;
+  const held = (i: number) => !!throttle.buttons[i]?.pressed;
+  // b6 or b7: straight back to where the camera rests.
+  if (CAM_BTN_CENTRE.some(held)) { camPanDown = 0; camPanSide = 0; setSlave(null); return; }
+  // A hand on the pan buttons takes the camera back off whatever mark the map
+  // had given it to hold.
+  if ([CAM_BTN_BACK, CAM_BTN_FORWARD, CAM_BTN_RIGHT, CAM_BTN_LEFT].some(held)) setSlave(null);
+  const step = CAM_PAN_RATE * dt;
+  const down = CAM_PAN_INVERT_DOWN ? -step : step;
+  const side = CAM_PAN_INVERT_SIDE ? -step : step;
+  if (held(CAM_BTN_BACK)) camPanDown += down;
+  if (held(CAM_BTN_FORWARD)) camPanDown -= down;
+  if (held(CAM_BTN_RIGHT)) camPanSide += side;
+  if (held(CAM_BTN_LEFT)) camPanSide -= side;
+  camPanDown = Math.min(CAM_DOWN_MAX - CAM_PITCH_DEG,
+    Math.max(CAM_DOWN_MIN - CAM_PITCH_DEG, camPanDown));
+  camPanSide = Math.min(CAM_SIDE_MAX, Math.max(-CAM_SIDE_MAX, camPanSide));
+}
+
+/**
+ * ── ZOOMING IT ─────────────────────────────────────────────────────────────
+ *
+ * b8 zooms in and b9 zooms out, and they work whatever the camera is doing —
+ * but what they change depends on which of its two ways it is working in:
+ *
+ *   FREE, pointed by its own pitch and pan, they change the LENS: CAM_FOV_DEG
+ *   is where it starts, and holding a button narrows or widens it.
+ *
+ *   SLAVED to a mark, they change HOW MUCH GROUND the picture is to cover AT
+ *   THE MARK — CAM_SLAVE_FRAME_M, in metres. The lens is then worked out from
+ *   that and the range every frame, so the mark is drawn the same size on the
+ *   screen whether it is five kilometres off or twenty: the further it is,
+ *   the tighter the lens goes. That is what makes a slaved mark readable at
+ *   any range, which a fixed lens never can be.
+ *
+ * Either way the lens is kept between CAM_FOV_MIN and CAM_FOV_MAX, so it can
+ * neither narrow to nothing nor open past what the eye would accept.
+ */
+const CAM_ZOOM_BTN_IN = 8;        // b8
+const CAM_ZOOM_BTN_OUT = 9;       // b9
+const CAM_ZOOM_RATE = 2.2;        // times in or out a second, held down
+const CAM_FOV_MIN = 0.4;          // the tightest the lens may go
+const CAM_FOV_MAX = 60;           // and the widest
+/** How much ground the picture covers AT THE MARK while slaved, in metres. */
+const CAM_SLAVE_FRAME_M = 300;
+const CAM_FRAME_MIN = 20;
+const CAM_FRAME_MAX = 6_000;
+
+/** The lens while it is free, and the ground it frames while it is slaved. */
+let camFov = CAM_FOV_DEG;
+let camFrameM = CAM_SLAVE_FRAME_M;
+
+/**
+ * ── THE TRIGGER ────────────────────────────────────────────────────────────
+ *
+ * The red trigger on the STICK has two stages, and the stick reports them as
+ * two buttons: the first pull is b0, pulling it home is b5. EITHER OF THEM
+ * lets the weapon go — the first pull is enough, and pulling on through to
+ * the second does not send a second one, since the weapon has already gone
+ * and the trigger must come all the way back before it will fire again.
+ * (WEAPON_FIRE_ON_HALF false waits for the full pull instead.)
+ *
+ * What happens then is not flown — there is no weapon in the world. Two
+ * things happen instead, and they are counted HERE, in the simulator, so
+ * that the world and the picture of it can never disagree:
+ *
+ *   · the map is told at once that the trigger has gone, and takes the store
+ *     that was chosen off the weapons screen;
+ *   · WEAPON_FLIGHT_S later the truck is taken out of the world — model,
+ *     badge and all — and the BURST stands in its place for BOOM_HOLD_S.
+ *
+ * WHERE THE BURST IS SEEN. It is an animated picture, and the world is made
+ * of three-dimensional things, so it is not put into the world: it is laid
+ * over the CAMERA SCREEN, on the exact spot the truck stood on in that
+ * picture. The simulator works that spot out — it is the only side that
+ * knows where the lens is pointing — and sends it with every frame; the map
+ * only lays the picture down where it is told. It grows and shrinks with the
+ * range and with the zoom, because it is given a size in METRES.
+ */
+const WEAPON_BTN_HALF = 0;        // b0 — the first pull
+const WEAPON_BTN_FULL = 5;        // b5 — pulled home
+const WEAPON_FIRE_ON_HALF = true;
+
+/** Seconds from the trigger to the strike. */
+const WEAPON_FLIGHT_S = 10;
+/** Seconds the burst then stands on the camera screen. */
+const BOOM_HOLD_S = 3;
+/** How big the burst is ON THE GROUND, in metres across. Bigger than the
+ *  truck, as a burst is: this is what makes it swell as you close in and as
+ *  the camera zooms. */
+const BOOM_SIZE_M = 60;
+
+let triggerWasDown = false;
+/** Set once the weapon lands, and never unset while the flight runs. */
+let modelStruck = false;
+/** While this stands, the burst is sent with every camera frame. */
+let boomUntil = 0;
+let strikeTimer = 0;
+
+/** The marks the map is to take off, by id — see TARGETS. */
+const struckMarks = new Set<string>();
+
+/** The weapon has landed: the truck is gone from the world, and with it the
+ *  badge on its roof. The burst then stands on the camera screen. */
+function strikeTheModel(): void {
+  modelStruck = true;
+  if (modelGroup) modelGroup.visible = false;
+  for (const t of TARGETS) if (t.kind === 'truck') struckMarks.add(t.file);
+  boomUntil = performance.now() + BOOM_HOLD_S * 1000;
+}
+
+/** Called every frame: watch the trigger and say the word when it goes. */
+function watchTrigger(): void {
+  const { stick } = warthogPads();
+  if (!stick) return;
+  const held = (i: number) => !!stick.buttons[i]?.pressed;
+  const half = held(WEAPON_BTN_HALF);
+  const full = held(WEAPON_BTN_FULL);
+  // Held at all, by either stage, is the trigger down. Taking it as one
+  // thing is what keeps a pull that carries on from the first stage to the
+  // second from counting twice.
+  const down = WEAPON_FIRE_ON_HALF ? (half || full) : full;
+  if (down && !triggerWasDown) {
+    mapChannel.postMessage({ kind: 'fire' } satisfies FireOrder);
+    if (!modelStruck) {
+      window.clearTimeout(strikeTimer);
+      strikeTimer = window.setTimeout(strikeTheModel, WEAPON_FLIGHT_S * 1000);
+    }
+  }
+  triggerWasDown = down;
+}
+
+/**
+ * WHERE THE BURST BELONGS IN THE CAMERA'S PICTURE, as shares of the frame —
+ * or nothing, when there is no burst standing or the spot has fallen behind
+ * the camera. The place the truck stood on is carried through the camera's
+ * own lens, which is what keeps the burst on it however the camera is
+ * pointed, slaved or zoomed.
+ */
+function boomInFrame(): { x: number; y: number; w: number } | undefined {
+  if (!modelStruck || !modelGroup || performance.now() > boomUntil) return undefined;
+  const at = modelGroup.position.clone();
+  at.y += BOOM_SIZE_M / 4;                     // it stands on the ground, not in it
+  const d = camCamera.position.distanceTo(at);
+  const ndc = at.project(camCamera);
+  if (ndc.z > 1) return undefined;             // behind the lens
+  // A thing BOOM_SIZE_M across at that range fills this much of the picture.
+  const w = BOOM_SIZE_M / (2 * d * Math.tan((camCamera.fov * Math.PI) / 360));
+  return { x: (ndc.x + 1) / 2, y: (1 - ndc.y) / 2, w };
+}
+
+/** Called every frame: b8 and b9 work the zoom while they are held. */
+function zoomCamera(dt: number): void {
+  const { throttle } = warthogPads();
+  if (!throttle) return;
+  const held = (i: number) => !!throttle.buttons[i]?.pressed;
+  const inn = held(CAM_ZOOM_BTN_IN);
+  const out = held(CAM_ZOOM_BTN_OUT);
+  if (inn === out) return;                   // neither, or both: leave it be
+  const k = CAM_ZOOM_RATE ** dt;             // smooth however fast the frames
+  if (inn) { camFov /= k; camFrameM /= k; } else { camFov *= k; camFrameM *= k; }
+  camFov = Math.min(CAM_FOV_MAX, Math.max(CAM_FOV_MIN, camFov));
+  camFrameM = Math.min(CAM_FRAME_MAX, Math.max(CAM_FRAME_MIN, camFrameM));
+}
+
+/** The lens this frame: worked out from the range while slaved, and whatever
+ *  the buttons have left it at while free. */
+function camFovNow(range: number): number {
+  const want = slavedTo
+    ? (2 * Math.atan((camFrameM / 2) / Math.max(1, range)) * 180) / Math.PI
+    : camFov;
+  return Math.min(CAM_FOV_MAX, Math.max(CAM_FOV_MIN, want));
+}
+
+const camCamera = new THREE.PerspectiveCamera(CAM_FOV_DEG, 1, 1, 400_000);
+const camCapture = document.createElement('canvas');
+camCapture.width = CAM_PX;
+camCapture.height = CAM_PX;
+const camCaptureCtx = camCapture.getContext('2d');
+let camSentAt = 0;
+let camUseBitmap = true;     // dropped to a data URL if the browser refuses
+const _camQuat = new THREE.Quaternion();
+const _camTilt = new THREE.Quaternion()
+  .setFromAxisAngle(new THREE.Vector3(1, 0, 0), (-CAM_PITCH_DEG * Math.PI) / 180);
+const _camFwd = new THREE.Vector3();
+const _camSwing = new THREE.Quaternion();
+const _camRight = new THREE.Vector3(1, 0, 0);
+const _camLook = new THREE.Vector3();
+const _camUp = new THREE.Vector3(0, 1, 0);
+
+/**
+ * ── SLAVED TO A MARK ───────────────────────────────────────────────────────
+ *
+ * The map can hand the camera a place on the ground to hold: press a mark on
+ * the map to pick it out, then press Slave on the panel under it, and the
+ * camera looks at that spot and keeps looking at it however the aircraft
+ * turns — the pitch and the pan are set aside while it does. Pressing Slave
+ * again lets it go, and so does touching the pan buttons: the hand on the
+ * throttle always wins.
+ */
+let slavedTo: { lat: number; lon: number } | null = null;
+const _slaveAt = new THREE.Vector3();
+
+function setSlave(to: { lat: number; lon: number } | null): void {
+  slavedTo = to;
+}
+
+/** Put the lens where it is wanted, and only tell the camera when it has
+ *  actually moved — rebuilding the projection every frame is waste. */
+function setCamFov(deg: number): void {
+  if (Math.abs(camCamera.fov - deg) < 1e-3) return;
+  camCamera.fov = deg;
+  camCamera.updateProjectionMatrix();
+}
+
+/** Where the camera is pointed this frame — steady, bolted on, or held on a
+ *  mark the map has given it. */
+function aimCamCamera(): void {
+  camCamera.position.copy(camera.position);
+  if (slavedTo) {
+    // Hold the spot: its place on the ground, lifted to the ground's own
+    // height where that is known, and the horizon kept level in the picture.
+    _slaveAt.copy(worldPoint(world, slavedTo.lat, slavedTo.lon, 0))
+      .add(terrain.anchor.worldOffset);
+    const ground = terrain.groundHeight(_slaveAt);
+    if (ground !== undefined) _slaveAt.y = ground;
+    camCamera.up.copy(_camUp);
+    camCamera.lookAt(_slaveAt);
+    // …and the lens tightened to the range, so it is drawn the same size
+    // whether it is near or far.
+    setCamFov(camFovNow(camera.position.distanceTo(_slaveAt)));
+    camCamera.updateMatrixWorld();
+    return;
+  }
+  setCamFov(camFovNow(0));
+  const tilt = ((CAM_PITCH_DEG + camPanDown) * Math.PI) / 180;
+  const swing = (camPanSide * Math.PI) / 180;
+  if (!CAM_STABILISED) {
+    // Bolted on: the swing and the tilt are turns of the airframe's own pose.
+    camCamera.quaternion.copy(camera.quaternion)
+      .multiply(_camSwing.setFromAxisAngle(_camUp, -swing))
+      .multiply(_camQuat.setFromAxisAngle(_camRight, -tilt));
+    camCamera.updateMatrixWorld();
+    return;
+  }
+  // The stabiliser: take the way the aircraft is FACING, flatten it to the
+  // ground so its climb and its bank fall away, tip that CAM_PITCH_DEG below
+  // the horizon, and look along it with up kept up — which is what leaves the
+  // horizon level in the picture whatever the aircraft is doing.
+  camera.getWorldDirection(_camFwd);
+  _camFwd.y = 0;
+  if (_camFwd.lengthSq() < 1e-8) _camFwd.set(0, 0, -1);   // pointing straight up or down
+  _camFwd.normalize();
+  if (swing) _camFwd.applyAxisAngle(_camUp, -swing);      // swung to the side
+  _camLook.copy(_camFwd).multiplyScalar(Math.cos(tilt));
+  _camLook.y -= Math.sin(tilt);
+  _camLook.add(camera.position);
+  camCamera.up.copy(_camUp);
+  camCamera.lookAt(_camLook);
+  camCamera.updateMatrixWorld();
+}
+
+/**
+ * Take one frame and send it. Called from the render loop, BEFORE the pilot's
+ * view is drawn: the belly view goes into the bottom-left corner of the canvas,
+ * is copied out, and is then painted over by the main render.
+ */
+function sendCamFrame(now: number): void {
+  if (!CAM_ON || !camCaptureCtx) return;
+  if (now - camSentAt < 1000 / CAM_FPS) return;
+  camSentAt = now;
+
+  aimCamCamera();
+  showHoops(false);
+  sizeMark(camCamera, MARK_SCREEN_CAM);   // its own size in this picture
+
+  const dpr = renderer.getPixelRatio();
+  renderer.setViewport(0, 0, CAM_PX, CAM_PX);
+  renderer.setScissor(0, 0, CAM_PX, CAM_PX);
+  renderer.setScissorTest(true);
+  renderer.render(scene, camCamera);
+  showHoops(true);
+  sizeMark(camera, MARK_SCREEN_SIM);
+  renderer.setScissorTest(false);
+  renderer.setViewport(0, 0, window.innerWidth, window.innerHeight);
+
+  // The GL viewport counts from the bottom; the canvas counts from the top.
+  const side = Math.round(CAM_PX * dpr);
+  camCaptureCtx.drawImage(
+    renderer.domElement, 0, renderer.domElement.height - side, side, side,
+    0, 0, CAM_PX, CAM_PX,
+  );
+
+  // The lens travels with the picture: the map puts on a quieter set of
+  // markings once it is tight, whether the zoom came from the throttle or
+  // from slaving the camera to a mark.
+  const fov = camCamera.fov;
+  const boom = boomInFrame();
+  if (camUseBitmap) {
+    createImageBitmap(camCapture).then((image) => {
+      try {
+        mapChannel.postMessage({ kind: 'cam', image, fov, boom, runId } satisfies CamFrame);
+      } catch {
+        camUseBitmap = false;   // this browser will not carry a picture; send text
+      }
+    }).catch(() => { camUseBitmap = false; });
+  } else {
+    mapChannel.postMessage({
+      kind: 'cam', image: camCapture.toDataURL('image/jpeg', 0.6), fov, boom, runId,
+    } satisfies CamFrame);
+  }
+}
+
+/** World config for the course: anchored on its own point, with extra detail. */
+function worldFor(): WorldConfig {
+  const w = worldFromLatLon(COURSE.anchor.lat, COURSE.anchor.lon);
   w.skirtOverlap = new Array(ZOOM_LEVELS).fill(1.01);
   w.maxZoom = 17; // extra imagery/height detail over the course
   return w;
@@ -444,9 +554,9 @@ function makeTerrain(w: WorldConfig): Terrain {
   );
 }
 
-// Re-anchored when the region changes (see `selectRegion`), so these are `let`.
-let world = worldFor(region());
-let terrain = makeTerrain(world);
+// One course, one anchor: the world is never re-anchored while flying.
+const world = worldFor();
+const terrain = makeTerrain(world);
 
 /**
  * Absolute (rebase-independent) world position of a geographic coordinate,
@@ -462,375 +572,870 @@ function worldPoint(w: WorldConfig, lat: number, lon: number, alt: number): THRE
   return new THREE.Vector3((x - w.anchorX) * w.tileSize, alt, (y - w.anchorZ) * w.tileSize);
 }
 
-// -- rings -------------------------------------------------------------------
-
-interface Ring {
-  center: THREE.Vector3; // ABSOLUTE position (independent of large-world rebase)
-  s: number; // distance along the course (for progressive reveal ordering)
-  radius: number;
-  points: number;
-  hazard: boolean;
-  mesh: THREE.Mesh;
-  /** The translucent pane inside the opening. The start gate has none: a pane
-   *  across a gateway reads as a surface to avoid, not an opening to fly
-   *  through. */
-  halo: THREE.Mesh | null;
-  /** Extra structure parented to `mesh` (the start gate's posts and banner). */
-  decor: THREE.Group | null;
-  done: boolean; // already flown through (scored or penalized) — ignore after
-  isStart: boolean; // the start gate: scores nothing, starts the run's clock
-  /** Rectangular rings (the start gate) carry their half-sizes; a crossing is
-   *  "through" when it falls inside this box rather than inside `radius`. */
-  halfW?: number;
-  halfH?: number;
-  baseColor: number; // colour when untouched (restored on a reset)
-}
-
-/** Group holds every ring; its position tracks the large-world offset. */
-const ringGroup = new THREE.Group();
-scene.add(ringGroup);
-
-const rings: Ring[] = [];
 /**
- * MEASUREMENT of one route attempt. The clock runs from the moment the start
- * gate's plane is crossed until Esc is pressed, and nothing else is timed: the
- * lead-in before the gate, and any time spent in the pause dialog, are excluded.
- *   runStartedAt — when the clock last started ticking (null = not ticking)
- *   runMs        — time already banked from earlier ticking stretches
- *   crashes      — crashes during this attempt
+ * The inverse of {@link worldPoint}: the geographic coordinate of an ABSOLUTE
+ * world position (user-space minus the large-world offset). This is what the
+ * moving map is fed — the simulator flies in metres, the map draws in degrees.
  */
-let runStartedAt: number | null = null;
-let runMs = 0;
-let crashes = 0;
-/** Whether the start gate has been crossed on this attempt. */
-let runArmed = false;
-/** Seconds measured so far on this attempt. */
-function courseElapsed(): number {
-  return (runMs + (runStartedAt === null ? 0 : performance.now() - runStartedAt)) / 1000;
-}
-/** Stop the clock, banking the time run so far. */
-function holdClock(): void {
-  if (runStartedAt !== null) { runMs += performance.now() - runStartedAt; runStartedAt = null; }
-}
-/** Start/resume the clock (only once the gate has been crossed). */
-function resumeClock(): void {
-  if (runArmed && runStartedAt === null) runStartedAt = performance.now();
-}
-/** Clear the whole measurement — a fresh attempt at a route. */
-function clearRun(): void {
-  runStartedAt = null; runMs = 0; crashes = 0; runArmed = false;
+function latLonFromWorld(w: WorldConfig, v: THREE.Vector3): { lat: number; lon: number } {
+  const n = 2 ** w.baseZoom;
+  const x = v.x / w.tileSize + w.anchorX;
+  const y = v.z / w.tileSize + w.anchorZ;
+  const lat = (Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / n))) * 180) / Math.PI;
+  return { lat, lon: (x / n) * 360 - 180 };
 }
 
-/** One finished route attempt — a row in the exported CSV. */
-interface RunRow {
-  name: string; subject: string; region: RegionId; route: number;
-  seconds: number; crashes: number; score: number; rings: number; targets: number;
-}
-const sessionRows: RunRow[] = [];
-/** Total number of green target rings (red hazards are excluded from the tally). */
-let totalTargets = 0;
-/** Constant course direction; every ring's opening faces along it (nose-on). */
-const courseNormal = new THREE.Vector3(0, 0, -1);
-/** Absolute centerline start of the course (spawn reference). */
-const courseStart = new THREE.Vector3();
-/** The course's horizontal "right" axis — used to test rectangular rings. */
-const courseRight = new THREE.Vector3(1, 0, 0);
+// -- fuel ---------------------------------------------------------------------
+/**
+ * FUEL, for the readout on the moving map's bottom panel. There is no fuel
+ * system in the flight model — this is a clock dressed as a gauge: it starts
+ * full and drops one step every so often, so the number on the panel moves the
+ * way a real one would while there is nothing yet to burn it.
+ * Change the three numbers and the readout changes with them.
+ */
+const FUEL_START_LB = 13_900;
+const FUEL_STEP_LB = 100;
+const FUEL_STEP_SECONDS = 10;
+/** When the current run began — the fuel clock's zero. */
+let fuelStartedAt = performance.now();
 
-/** A flat square "annulus" (a square frame / square ring) in the XY plane, for
- *  the red hazards — same footprint as a circle of the given half-size. */
-function rectAnnulus(outW: number, outH: number, inW: number, inH: number): THREE.ShapeGeometry {
-  const shape = new THREE.Shape();
-  shape.moveTo(-outW, -outH);
-  shape.lineTo(outW, -outH);
-  shape.lineTo(outW, outH);
-  shape.lineTo(-outW, outH);
-  shape.closePath();
-  const hole = new THREE.Path();
-  hole.moveTo(-inW, -inH);
-  hole.lineTo(-inW, inH);
-  hole.lineTo(inW, inH);
-  hole.lineTo(inW, -inH);
-  hole.closePath();
-  shape.holes.push(hole);
-  return new THREE.ShapeGeometry(shape);
+function fuelLb(): number {
+  const seconds = (performance.now() - fuelStartedAt) / 1000;
+  const burnt = FUEL_STEP_LB * Math.floor(seconds / FUEL_STEP_SECONDS);
+  return Math.max(0, FUEL_START_LB - burnt);
 }
 
-function squareAnnulus(outerHalf: number, innerHalf: number): THREE.ShapeGeometry {
-  const shape = new THREE.Shape();
-  shape.moveTo(-outerHalf, -outerHalf);
-  shape.lineTo(outerHalf, -outerHalf);
-  shape.lineTo(outerHalf, outerHalf);
-  shape.lineTo(-outerHalf, outerHalf);
-  shape.closePath();
-  const hole = new THREE.Path();
-  hole.moveTo(-innerHalf, -innerHalf);
-  hole.lineTo(-innerHalf, innerHalf);
-  hole.lineTo(innerHalf, innerHalf);
-  hole.lineTo(innerHalf, -innerHalf);
-  hole.closePath();
-  shape.holes.push(hole);
-  return new THREE.ShapeGeometry(shape);
+// -- the moving map (second screen) ------------------------------------------
+
+/** How often (s) a position is broadcast. 20 Hz is smooth on the map and far
+ *  cheaper than sending one per rendered frame. */
+const MAP_FIX_INTERVAL = 1 / 20;
+const mapChannel = new BroadcastChannel(MAP_CHANNEL);
+// The one thing the map sends BACK: the spot the belly camera is to hold, or
+// null to let it go. Everything else on this channel runs the other way.
+mapChannel.addEventListener('message', (e: MessageEvent) => {
+  const m = e.data as SlaveOrder;
+  if (m && m.kind === 'slave') setSlave(m.at ?? null);
+});
+let mapFixTimer = 0;
+/** Counts fixes, so the flown path rides along on every TRAIL_EVERY-th one. */
+let mapFixCount = 0;
+/** Bumped on every respawn, so the map knows to drop the old track. */
+let runId = 0;
+const _mapAbs = new THREE.Vector3();
+
+/** Send the aircraft's position and heading to the map, with the route and the
+ *  track in degrees. The route is the same list of points every time: it is
+ *  fixed in the world, and the map simply draws it where it is. */
+function sendMapFix(): void {
+  _mapAbs.copy(camera.position).sub(terrain.anchor.worldOffset);
+  const { lat, lon } = latLonFromWorld(world, _mapAbs);
+  const fix: MapFix = {
+    lat,
+    lon,
+    headingDeg: currentHeading(),
+    altFt: camera.position.y * 3.28084,
+    speedKt: flight.speed * 1.94384,
+    fuelLb: fuelLb(),
+    crashed: flight.crashed,
+    runId,
+    route: ROUTE_WAYPOINTS.map((w, i) => (i + 1 === HOOP_TALL_AT
+      ? { lat: w.lat, lon: w.lon, name: HOOP_TALL_NAME }
+      : { lat: w.lat, lon: w.lon })),
+    leadIn: routeLeadIn(),
+    targets: targetMarks(),
+    struck: [...struckMarks],
+    areas: areaMarks(),
+    cues: cueMarks(),
+  };
+  if (mapFixCount++ % TRAIL_EVERY === 0) fix.trail = trail.map((p) => latLonFromWorld(world, p));
+  mapChannel.postMessage(fix);
 }
 
-/** Free every geometry, material and texture under an object (children too). */
-function disposeTree(root: THREE.Object3D): void {
-  root.traverse((o) => {
-    const geo = (o as Partial<THREE.Mesh>).geometry;
-    const mat = (o as Partial<THREE.Mesh>).material;
-    geo?.dispose();
-    for (const m of Array.isArray(mat) ? mat : mat ? [mat] : []) {
-      (m as THREE.SpriteMaterial).map?.dispose();
-      m.dispose();
+// -- the route, and the track flown -------------------------------------------
+/**
+ * THE ROUTE is a line fixed in the world: the way the aircraft is MEANT to fly,
+ * from the course's start to its end. It does not follow the aircraft and it
+ * does not care whether the aircraft is on it — fly off and the route stays
+ * exactly where it was, which is the whole point of having one.
+ *
+ * It is worked out once, at start-up, and sent to the moving map; nothing is
+ * drawn over the terrain in the cockpit view. Giving it a shape other than the
+ * straight line between the two course points is a matter of replacing what
+ * `buildRoute` pushes — everything downstream only ever sees a list of points.
+ *
+ * THE TRACK is the other line: where the aircraft has actually been.
+ */
+/** Where the aircraft is meant to go (the route's own colour). */
+const PATH_COLOR_AHEAD = 0x40a0ff;
+/** Where it has already been. */
+const PATH_COLOR_FLOWN = 0x5a899a;
+/** How often (times a second) the track is extended. */
+const PATH_UPDATE_HZ = 10;
+/** A flown point is kept every this many metres, up to this many points. */
+const TRAIL_STEP = 60;
+const TRAIL_MAX = 600;
+
+/** The track flown so far, in ABSOLUTE world positions (newest last). */
+const trail: THREE.Vector3[] = [];
+let pathTimer = 0;
+
+/**
+ * ══ THE ROUTE PLAN ══════════════════════════════════════════════════════════
+ *
+ * THE LIST BELOW, ROUTE_PLAN, IS THE ROUTE. The map joins its points with
+ * straight legs, rings each one and numbers them 1A, 2A, 3A… in the order
+ * written. Nothing is smoothed or sampled in between, so what is written here
+ * is exactly what is drawn.
+ *
+ * 1A is always COURSE.start — where the aircraft begins. Every line after it
+ * adds ONE more waypoint, and there are two ways to write a line.
+ *
+ * ── A. BY FLYING ON: how far, and how much to turn first ──────────────
+ *
+ *     { turn: -12, run: 700 },
+ *
+ *   `turn`  how many DEGREES the line breaks at the waypoint BEFORE this
+ *           one, before setting off towards this one.
+ *             negative → LEFT        positive → RIGHT        0 → straight on
+ *           Small numbers are gentle: 5 is barely a kink, 12 a clear break,
+ *           45 a sharp corner, 90 a right-angle turn.
+ *   `run`   how many METRES this leg runs: the distance from the previous
+ *           waypoint to this one. 700 is 700 m, 2_200 is 2.2 km (the
+ *           underscore is only there to be read easily — 2200 is the same).
+ *   `alt`   OPTIONAL, metres above sea level. Left out, the waypoint keeps
+ *           the height of the one before it.
+ *
+ *   The first line of the plan turns from the LAUNCH HEADING, the direction
+ *   the aircraft is pointing when the flight begins, so `turn: 0` there means
+ *   "carry straight on the way it is already flying".
+ *
+ * ── B. BY COORDINATE: a place on the map ──────────────────────────────
+ *
+ *     { at: { lat: 33.337951, lon: 35.676042, alt: 1900 } },
+ *
+ *   The pair Google Maps gives when you right-click a place and click the
+ *   coordinates to copy them. The line simply goes there, however far and at
+ *   whatever angle that is, and the next leg's `turn` is then measured from
+ *   the direction of arrival.
+ *
+ * The two kinds can be mixed freely in one plan.
+ *
+ * ── TO ADD A WAYPOINT ─────────────────────────────────────────────────
+ *
+ * Write one more line, in the place in the list where it belongs. Everything
+ * after it follows on automatically — the numbering, the colours, the rings
+ * — because the plan is read in order and nothing is written down twice.
+ * Delete a line and the route closes up the same way.
+ *
+ * The LAST line is the far end of the route; today it is a long straight run
+ * so the line leaves the screen, which is why its `run` is 50 km.
+ */
+const ROUTE_PLAN: RouteStep[] = [
+  // 1A is the course's own start; this first leg is the one that used to run
+  // from 3A to 4A, and it sets off straight down the launch line.
+  { turn: 0, run: 6_500 },          // 2A
+  { turn: -20, run: 8_000 },        // 3A — the first set of rings lights here
+  { turn: +19, run: 3_200 },        // 4A
+  // The little 700 m leg that used to stand after 4A is gone, and the number
+  // it carried with it: this one leg now does the work of the two.
+  { turn: -4.9, run: 1_691 },       // 5A
+
+  // FROM HERE UP THE WEST SIDE. The tail is written as places rather than as
+  // turns, because what matters about it is where it lies on the ground: it
+  // passes WEST of Lake Qaraoun, and AAT stands about 1.2 km clear of the
+  // water's western shore — two kilometres from the launcher.
+  { at: { lat: 33.4530, lon: 35.6500, alt: 1_000 } },   //  6A
+  // 7A is the break: the line comes up to it on 015° and leaves on 357°, an
+  // eighteen-degree swing to the WEST — it now leans a little west of north
+  // rather than east of it. 8A, AAT and 10A all stand on that one straight
+  // line, so the whole stretch past the lake has moved west with it.
+  { at: { lat: 33.4850, lon: 35.6600, alt: 1_000 } },   //  7A — breaks west
+  { at: { lat: 33.5164, lon: 35.6580, alt: 1_000 } },   //  8A — straight on
+  { at: { lat: 33.5559, lon: 35.6555, alt: 1_000 } },   //  9A — AAT: 2.6 km west
+                                            //       of the lake, and the high one
+  { at: { lat: 33.5963, lon: 35.6530, alt: 1_000 } },   // 10A
+  // …and from here the line leans back to the right for the last two.
+  { at: { lat: 33.6273, lon: 35.6596, alt: 1_000 } },   // 11A
+  { at: { lat: 33.6663, lon: 35.6721, alt: 1_000 } },   // 12A
+];
+
+/** One line of the plan: a leg to fly, or a place to go to. */
+type RouteStep =
+  | { turn?: number; run: number; alt?: number }
+  | { at: GeoPoint };
+
+/** The bearing of the launch line, degrees — the way the aircraft starts off. */
+function courseBearing(): number {
+  const kx = Math.cos((COURSE.start.lat * Math.PI) / 180);
+  return (Math.atan2((COURSE.end.lon - COURSE.start.lon) * kx,
+    COURSE.end.lat - COURSE.start.lat) * 180) / Math.PI;
+}
+
+/** The point `metres` from `from` on `bearingDeg`, at the same altitude. */
+function legFrom(from: GeoPoint, bearingDeg: number, metres: number): GeoPoint {
+  const rad = (bearingDeg * Math.PI) / 180;
+  const kx = Math.cos((from.lat * Math.PI) / 180);   // lon degrees are shorter up here
+  return {
+    lat: from.lat + (metres * Math.cos(rad)) / 111_320,
+    lon: from.lon + (metres * Math.sin(rad)) / 111_320 / kx,
+    alt: from.alt,
+  };
+}
+
+/** The bearing from one point to another, degrees. */
+function bearingBetween(from: GeoPoint, to: GeoPoint): number {
+  const kx = Math.cos((from.lat * Math.PI) / 180);
+  return (Math.atan2((to.lon - from.lon) * kx, to.lat - from.lat) * 180) / Math.PI;
+}
+
+/** Read the plan in order and hand back the waypoints it describes. */
+function buildRoute(start: GeoPoint, plan: RouteStep[]): GeoPoint[] {
+  const out = [start];
+  let bearing = courseBearing();       // the way the aircraft sets off
+  for (const step of plan) {
+    const from = out[out.length - 1];
+    if ('at' in step) {
+      bearing = bearingBetween(from, step.at);   // the next turn is measured from here
+      out.push(step.at);
+    } else {
+      bearing += step.turn ?? 0;
+      const next = legFrom(from, bearing, step.run);
+      out.push(step.alt === undefined ? next : { ...next, alt: step.alt });
     }
-  });
+  }
+  return out;
 }
 
-/** Every material that makes up one ring (frame, pane, gate decoration). */
-function* ringMaterials(ring: Ring): Generator<THREE.Material> {
-  yield ring.mesh.material as THREE.Material;
-  if (ring.halo) yield ring.halo.material as THREE.Material;
-  if (ring.decor) {
-    for (const o of ring.decor.children) yield (o as THREE.Mesh).material as THREE.Material;
+/** The route itself: 1A, 2A, 3A… exactly as the plan above describes them. */
+const ROUTE_WAYPOINTS: GeoPoint[] = buildRoute(COURSE.start, ROUTE_PLAN);
+/**
+ * ══ THE HOOPS ON THE ROUTE ══════════════════════════════════════════════════
+ *
+ * In the SIMULATOR — not on the map — every waypoint of the route is marked in
+ * the air by a white hoop with a white dot at its middle, so the way ahead can
+ * be seen out of the window the way it is seen on the map.
+ *
+ * They are real things standing in the world, not marks drawn on the glass, so
+ * nothing has to be done to make the far ones small: the one being flown at
+ * grows as it is approached and the ones beyond it stay small, by perspective
+ * alone. How high each one hangs is HOOP_ALT_FT, and HOOP_FROM_GROUND says
+ * what that is measured from: sea level, which keeps them all in one flat
+ * plane, or the ground beneath each one, which makes them follow the hills.
+ *
+ * Each hoop turns to face the aircraft every frame, so it always reads as a
+ * circle rather than closing up to a line when passed to one side.
+ */
+const HOOPS_ON = true;            // false and there are no hoops at all
+// HOW HIGH EACH ONE HANGS, in feet, and what that height is measured from:
+//   false — above SEA LEVEL, the same height for every hoop, so they stand in
+//           one flat plane however the ground rises and falls under them;
+//   true  — above THE GROUND BENEATH IT, so each follows its own hill.
+// Above the ground, so each hoop keeps the same height over whatever hill it
+// stands on. (Measured along this route, the ground under the waypoints runs
+// from 72 m at the start to 1,108 m at the last; a fixed height above the SEA
+// would have to clear all of that, which is why it is taken from the ground.)
+const HOOP_FROM_GROUND = true;
+const HOOP_ALT_FT = 500;          // 500 ft is 152 m
+/**
+ * ONE HOOP STANDING HIGH. The waypoint named here — 9 is AAT, the one west of
+ * the lake — is hung at HOOP_TALL_FT instead of the height every other hoop
+ * has, and it alone. 0 on HOOP_TALL_AT puts them all back to one height.
+ */
+const HOOP_TALL_AT = 9;
+const HOOP_TALL_FT = 10_000;
+/** Its own colour in the simulator, and its own name on the map — it is not
+ *  numbered with the others. */
+const HOOP_TALL_COLOUR = 0xff5fdc;
+const HOOP_TALL_NAME = 'AAT';
+const HOOP_DIAMETER_M = 60;       // the hoop's width in the world, in metres
+const HOOP_THICKNESS_M = 2.5;     // how heavy its line is drawn
+const HOOP_DOT_M = 6;             // the dot at its middle, across
+const HOOP_COLOUR = 0xffffff;
+/**
+ * HOW STRONGLY EACH ONE IS DRAWN, by how far off it is. The one being flown at
+ * stands out and the ones beyond it sit back, so the near and the far are told
+ * apart at a glance rather than all shouting at once.
+ *
+ *   nearer than HOOP_NEAR_M   → HOOP_OPACITY_NEAR
+ *   further than HOOP_FAR_M   → HOOP_OPACITY_FAR
+ *   between the two           → somewhere in between, evenly
+ *
+ * Set the two opacities the same and every hoop is drawn alike, as before.
+ */
+const HOOP_OPACITY_NEAR = 0.95;
+const HOOP_OPACITY_FAR = 0.3;
+const HOOP_NEAR_M = 3_000;
+const HOOP_FAR_M = 15_000;
+
+/** One hoop: the ring and its dot, the place it stands in the world, and the
+ *  skin that is its own — each is faded on its own, so each needs one. */
+interface Hoop {
+  group: THREE.Group;
+  skin: THREE.MeshBasicMaterial;
+  at: THREE.Vector3;
+  grounded: boolean;
+  tall: boolean;
+}
+const hoops: Hoop[] = [];
+
+function buildHoops(): void {
+  if (!HOOPS_ON) return;
+  const paint = (colour: number) => new THREE.MeshBasicMaterial({
+    color: colour,
+    transparent: true,          // every hoop is faded by its own distance
+    opacity: HOOP_OPACITY_NEAR,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const r = HOOP_DIAMETER_M / 2;
+  const ring = new THREE.RingGeometry(r - HOOP_THICKNESS_M, r, 48);
+  const dot = new THREE.CircleGeometry(HOOP_DOT_M / 2, 24);
+  for (const w of ROUTE_WAYPOINTS) {
+    const group = new THREE.Group();
+    const tall = hoops.length + 1 === HOOP_TALL_AT;
+    const skin = paint(tall ? HOOP_TALL_COLOUR : HOOP_COLOUR);
+    group.add(new THREE.Mesh(ring, skin));
+    group.add(new THREE.Mesh(dot, skin));
+    scene.add(group);
+    // The height is the ground's plus the hoop's own, and the ground is only
+    // known once its tile is in; until then the hoop waits at the waypoint's
+    // own height and is moved as soon as the terrain can answer.
+    hoops.push({
+      group,
+      skin,
+      at: worldPoint(world, w.lat, w.lon, w.alt ?? 0),
+      grounded: false,
+      tall,
+    });
   }
 }
 
-/** A transparent canvas texture holding one word in white (tinted by the
- *  material's colour), outlined so it stays legible against sky or ground. */
-function wordTexture(text: string): THREE.CanvasTexture {
-  const c = document.createElement('canvas');
-  c.width = 1024;
-  c.height = 256;
-  const ctx = c.getContext('2d')!;
-  ctx.font = '700 170px Roboto, system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.lineJoin = 'round';
-  ctx.lineWidth = 18;
-  ctx.strokeStyle = 'rgba(0, 0, 0, .75)';
-  ctx.strokeText(text, c.width / 2, c.height / 2);
-  ctx.fillStyle = '#fff';
-  ctx.fillText(text, c.width / 2, c.height / 2);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
+/** Every frame: keep each hoop on its spot, at its height, facing the pilot. */
+function updateHoops(): void {
+  if (!hoops.length) return;
+  const lift = HOOP_ALT_FT * 0.3048;
+  for (const hoop of hoops) {
+    const mine = hoop.tall ? HOOP_TALL_FT * 0.3048 : lift;
+    hoop.group.position.copy(hoop.at).add(terrain.anchor.worldOffset);
+    if (!HOOP_FROM_GROUND) {
+      // Above sea level: the height is known straight away, and the ground
+      // under it is never asked for.
+      if (!hoop.grounded) {
+        hoop.at.y = mine;
+        hoop.group.position.y = mine + terrain.anchor.worldOffset.y;
+        hoop.grounded = true;
+      }
+    } else {
+      // Above the ground, which is asked for EVERY frame rather than once:
+      // the first answer comes from whatever coarse tile happens to be in at
+      // the time, and a hoop fifteen kilometres ahead would keep that rough
+      // height for the whole flight. Asking again as the finer ground arrives
+      // settles each one onto its own hill instead.
+      const ground = terrain.groundHeight(hoop.group.position);
+      if (ground !== undefined) {
+        // `at` is absolute metres, so the offset comes back off again.
+        hoop.at.y = ground - terrain.anchor.worldOffset.y + mine;
+        hoop.group.position.y = ground + mine;
+        hoop.grounded = true;
+      }
+    }
+    hoop.group.quaternion.copy(camera.quaternion);   // always face the pilot
+
+    // …and faded by how far off it is, so the one being flown at reads as the
+    // near one and the rest sit back behind it.
+    const d = camera.position.distanceTo(hoop.group.position);
+    const span = Math.max(1, HOOP_FAR_M - HOOP_NEAR_M);
+    const t = Math.min(1, Math.max(0, (d - HOOP_NEAR_M) / span));
+    hoop.skin.opacity = HOOP_OPACITY_NEAR + (HOOP_OPACITY_FAR - HOOP_OPACITY_NEAR) * t;
+  }
 }
 
 /**
- * What turns the start gate from a rectangle into a gateway: a post under each
- * side dropping towards the ground, and a "START" banner over the top bar. The
- * banner is a sprite, so it faces the camera from wherever the aircraft comes
- * from — the gate is identifiable while manoeuvring around it, not only when
- * squared up to it.
+ * ══ THE MODEL ON THE GROUND ═════════════════════════════════════════════════
+ *
+ * A thing built in three dimensions — 3D.glb — standing at a place of its own
+ * on the earth. It is part of the world, not a mark on the screen: the camera
+ * under the aircraft sees it as readily as the pilot does, and flying round it
+ * shows its other side.
+ *
+ * WHERE IT STANDS is MODEL_AT, in degrees. It is set DOWN ON THE GROUND: the
+ * model is measured once it has loaded and then lifted by however much of it
+ * lies below its own middle, so its foot rests on the earth rather than its
+ * middle. MODEL_LIFT_M raises or sinks it from there.
+ *
+ * HOW BIG it is comes from the file — as it is drawn there, about fifteen
+ * metres across — and MODEL_SCALE multiplies that: 2 is twice the size, 0.5
+ * half. MODEL_TURN_DEG turns it on the spot, clockwise from however the file
+ * has it facing.
  */
-function gateDecor(halfW: number, halfH: number, color: number): THREE.Group {
-  const g = new THREE.Group();
-  const postGeo = new THREE.CylinderGeometry(
-    START_GATE_POST_R, START_GATE_POST_R, START_GATE_POST_DROP, 12, 1, true,
-  );
-  for (const sx of [-1, 1]) {
-    const post = new THREE.Mesh(
-      postGeo.clone(),
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0, side: THREE.DoubleSide }),
-    );
-    post.position.set(sx * halfW, -halfH - START_GATE_BAR - START_GATE_POST_DROP / 2, 0);
-    g.add(post);
-  }
-  postGeo.dispose();
-  const label = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: wordTexture('START'), color, transparent: true, opacity: 0, depthWrite: false,
+const MODEL_ON = true;
+const MODEL_FILE = './icons/3D.glb';
+// Moved 345 m south of the point first given, which fell on the water: this
+// one is open ground above the lake's west shore, by the track that runs
+// along it.
+const MODEL_AT = { lat: 33.575607871933855, lon: 35.70688745379074 };
+const MODEL_SCALE = 5;            // 1 is the size the file is drawn at
+const MODEL_TURN_DEG = 0;
+const MODEL_LIFT_M = 1.5;         // plus lifts it off the ground, minus sinks it
+/**
+ * THE LIGHT ON IT. The ground is drawn by a shader of its own that needs no
+ * light at all, so until now the scene had none — and a model built with real
+ * materials came out as a black silhouette. These two give it a sky to sit
+ * under and a sun to catch: MODEL_SKY_LIGHT is the soft light from all round,
+ * MODEL_SUN_LIGHT the hard light from one side, and MODEL_SUN_FROM the
+ * direction that one comes from (degrees clockwise from north, and how high
+ * it stands). They touch nothing but the model.
+ */
+const MODEL_SKY_LIGHT = 1.6;
+const MODEL_SUN_LIGHT = 2.2;
+const MODEL_SUN_FROM = { bearing: 140, height: 45 };
+/**
+ * THE BADGE OVER IT, Car Hozi.png.
+ *
+ * A sign on a stalk standing on the middle of the model's roof, so the thing
+ * can be picked out from the air. It belongs to the PILOT'S EYE ONLY: it is
+ * not on the moving map, and it is kept out of the belly camera's picture the
+ * same way the hoops are.
+ *
+ * IT IS A MARK, NOT A THING. However far off the truck is, the badge is drawn
+ * THE SAME SIZE: it does not shrink into the distance the way the truck does,
+ * it only moves with it. Its size is given as a share of the picture's height
+ * and separately for each picture it appears in —
+ *
+ *   MARK_SCREEN_SIM  in the simulator's own window
+ *   MARK_SCREEN_CAM  in the picture the belly camera sends to the map
+ *
+ * so the two can be set to read well on their own terms, whatever happens to
+ * the size of either window.
+ *
+ * It is NOT seen from the far side of the country: it comes up only once the
+ * aircraft is within MARK_RANGE_M of it, over the last MARK_FADE_M of that.
+ *
+ * It stands on the middle of the roof and always faces the aircraft; it is
+ * drawn over whatever lies in front of it, so a rise in the ground does not
+ * swallow it.
+ */
+const MODEL_MARK = './icons/Car%20Hozi.png';
+const MARK_SCREEN_SIM = 0.05;     // share of the simulator window's height
+const MARK_SCREEN_CAM = 0.12;     // share of the camera picture's height
+const MARK_RANGE_M = 10_000;      // first seen this far out
+const MARK_FADE_M = 500;          // and comes up over this much of it
+const MARK_LIFT_M = 0;            // extra air between the roof and its foot
+
+/** The model's own place in the world, and the group it hangs in. */
+let modelGroup: THREE.Group | null = null;
+const modelAt = new THREE.Vector3();
+
+function lightTheModel(): void {
+  const sky = new THREE.HemisphereLight(0xcfe3ff, 0x6b6356, MODEL_SKY_LIGHT);
+  scene.add(sky);
+  const sun = new THREE.DirectionalLight(0xffffff, MODEL_SUN_LIGHT);
+  const b = (MODEL_SUN_FROM.bearing * Math.PI) / 180;
+  const h = (MODEL_SUN_FROM.height * Math.PI) / 180;
+  // North is -z here, as it is for the course.
+  sun.position.set(Math.sin(b) * Math.cos(h), Math.sin(h), -Math.cos(b) * Math.cos(h));
+  scene.add(sun);
+}
+
+function loadModel(): void {
+  if (!MODEL_ON) return;
+  lightTheModel();
+  new GLTFLoader().load(MODEL_FILE, (gltf) => {
+    const group = new THREE.Group();
+    const thing = gltf.scene;
+    thing.scale.multiplyScalar(MODEL_SCALE);
+    thing.rotation.y += (MODEL_TURN_DEG * Math.PI) / 180;
+    // Measured as it will be drawn, so the foot of it can be put on the
+    // ground however the file has its middle.
+    thing.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(thing);
+    thing.position.y -= box.min.y;
+    group.add(thing);
+    addModelMark(group, box);
+    scene.add(group);
+    modelGroup = group;
+    modelAt.copy(worldPoint(world, MODEL_AT.lat, MODEL_AT.lon, 0));
+  });
+}
+
+/** The badge over the model: a sign standing on the middle of its roof. */
+let modelMark: THREE.Sprite | null = null;
+function addModelMark(group: THREE.Group, box: THREE.Box3): void {
+  if (!MODEL_MARK) return;
+  const art = new THREE.TextureLoader().load(MODEL_MARK);
+  art.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: art,
+    depthTest: false,          // a mark over the world, not a thing in it
+    transparent: true,
   }));
-  label.scale.set(START_GATE_LABEL_H * 4, START_GATE_LABEL_H, 1);
-  // The glyphs fill the middle ~2/3 of the sprite, so half its height puts the
-  // word's underline a short gap above the bar instead of floating off it.
-  label.position.set(0, halfH + START_GATE_BAR + START_GATE_LABEL_H * 0.42, 0);
-  g.add(label);
-  return g;
+  sprite.renderOrder = 10;
+  // Over the MIDDLE OF THE ROOF — the middle of what is actually drawn, not
+  // of wherever the file happens to put the model's own origin.
+  sprite.position.x = (box.min.x + box.max.x) / 2;
+  sprite.position.z = (box.min.z + box.max.z) / 2;
+  markRoof = box.max.y - box.min.y;
+  group.add(sprite);
+  modelMark = sprite;
 }
 
-/** Drop the current route's rings (geometry included) before building another. */
-function clearCourse(): void {
-  for (const ring of rings) {
-    ringGroup.remove(ring.mesh);
-    disposeTree(ring.mesh); // the pane and the gate's decoration hang off it
-  }
-  rings.length = 0;
-  totalTargets = 0;
+/** How tall the model is drawn, so the badge knows where its roof is. */
+let markRoof = 0;
+
+/**
+ * Size the badge for ONE picture, so that it fills the same share of it
+ * however far off the truck is: a thing of height h at distance d fills
+ * h / (2 d tan(fov/2)) of the picture, so the height to ask for is that
+ * worked back. The foot of the stalk then goes on the roof.
+ */
+function sizeMark(view: THREE.PerspectiveCamera, share: number): void {
+  if (!modelMark || !modelGroup) return;
+  const roof = modelGroup.position.clone();
+  roof.y += markRoof;
+  const d = Math.max(1, view.position.distanceTo(roof));
+  const h = 2 * d * Math.tan((view.fov * Math.PI) / 360) * share;
+  modelMark.scale.set((h * 131) / 284, h, 1);   // the file is 131 x 284
+  modelMark.position.y = markRoof + MARK_LIFT_M + h / 2;
 }
 
-function buildCourse(route: Route): void {
-  clearCourse();
-  const a = worldPoint(world, route.start.lat, route.start.lon, route.start.alt);
-  const b = worldPoint(world, route.end.lat, route.end.lon, route.end.alt);
-  /** Distance (m) from the course start to the LAST station: the straight-line
-   *  distance to the route's end, so the course finishes exactly on it. The
-   *  gaps below are stretched proportionally to fill it — deleting rows spreads
-   *  the remaining rings out, adding rows packs them tighter. Rings sharing a
-   *  station (gap 0) stay side by side. */
-  const courseEnd = b.distanceTo(a);
-
-  // Every ring faces along the straight centerline (the opening squares up to
-  // the aircraft's nose); the per-ring side/up offsets below only shift the
-  // CENTER, never the facing — a "crab walk", not a turn.
-  courseNormal.copy(b).sub(a).normalize();
-  courseStart.copy(a);
-  const up = new THREE.Vector3(0, 1, 0);
-  const right = new THREE.Vector3(-courseNormal.z, 0, courseNormal.x).normalize();
-  courseRight.copy(right);
-  const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), courseNormal);
-  // Squares need an explicit in-plane orientation (edges level with right/up),
-  // which a circle didn't care about.
-  const upInPlane = new THREE.Vector3().crossVectors(courseNormal, right).normalize();
-  const quatSquare = new THREE.Quaternion().setFromRotationMatrix(
-    new THREE.Matrix4().makeBasis(right, upInPlane, courseNormal),
-  );
-  // quatSquare's in-plane up actually points DOWN (it is the basis that keeps a
-  // square's edges level, and a symmetric square cannot tell). The start gate
-  // can: its posts hang below and its banner sits above. So it gets its own
-  // right-handed basis whose +Y really is up, with +Z flipped so it stays
-  // right-handed. The frame is double-sided, so facing the other way shows
-  // exactly the same gate.
-  const quatGate = new THREE.Quaternion().setFromRotationMatrix(
-    new THREE.Matrix4().makeBasis(right, upInPlane.clone().negate(), courseNormal.clone().negate()),
-  );
-
-  // Place each ring from the route's table: walk along the centerline by
-  // `gap`, then step
-  // `side` (right/left) and `up` (above/below) off the line.
-  // First station a fixed flight time from the spawn; the remaining gaps are
-  // stretched so the last station lands exactly on the route's end.
-  const firstAlong = FIRST_RING_ALONG;
-  const restGaps = route.rings.slice(1).reduce((sum, spec) => sum + spec.gap, 0);
-  const gapScale = (courseEnd - firstAlong) / restGaps;
-  let along = 0;
-  for (const [i, spec] of route.rings.entries()) {
-    along += i === 0 ? firstAlong : spec.gap * gapScale;
-    const radius = SIZE_RADIUS[spec.size];
-    const hazard = spec.kind === 'red';
-    const points = hazard ? HAZARD_POINTS : radius >= 80 ? 5 : 10;
-    const center = a
-      .clone()
-      .addScaledVector(courseNormal, along)
-      .addScaledVector(right, spec.side)
-      .addScaledVector(up, spec.up);
-
-    const color = hazard ? COLOR_HAZARD : COLOR_TARGET;
-    addRing(center, along, radius, points, hazard, false, color, quat, quatSquare);
-    if (!hazard) totalTargets++;
-  }
-
-  // The start gate: dead on the centerline (no side/up offset) a fixed distance
-  // before the first ring, so it is crossed without manoeuvring.
-  const gateAlong = firstAlong - START_GATE_BACK;
-  addRing(
-    a.clone().addScaledVector(courseNormal, gateAlong).addScaledVector(up, START_GATE_UP),
-    gateAlong, Math.min(START_GATE_HALF_W, START_GATE_HALF_H), 0, false, true, COLOR_START,
-    quat, quatGate, { halfW: START_GATE_HALF_W, halfH: START_GATE_HALF_H },
-  );
+/** How strongly it shows from where the aircraft is: nothing at all beyond
+ *  its range, coming up over the last stretch of it. */
+function markFade(): number {
+  if (!modelGroup) return 0;
+  const d = camera.position.distanceTo(modelGroup.position);
+  if (d >= MARK_RANGE_M) return 0;
+  if (d <= MARK_RANGE_M - MARK_FADE_M) return 1;
+  return (MARK_RANGE_M - d) / Math.max(1, MARK_FADE_M);
 }
 
-/** Build one ring's meshes and register it. Shared by the course and the start gate. */
-function addRing(
-  center: THREE.Vector3, s: number, radius: number, points: number,
-  hazard: boolean, isStart: boolean, color: number,
-  quat: THREE.Quaternion, quatSquare: THREE.Quaternion,
-  rect?: { halfW: number; halfH: number },
-): void {
-  const tube = Math.max(6, radius * 0.07);
-  // Blue targets = round (torus + ring fill); hazards = square; the start gate
-  // = a wide rectangular frame with posts and a banner, and NO pane across the
-  // opening. Squares and rectangles use `quatSquare`, which keeps their edges
-  // level with the course's right/up axes.
-  let outlineGeo: THREE.BufferGeometry;
-  let fillGeo: THREE.BufferGeometry | null;
-  if (rect) {
-    const bar = START_GATE_BAR; // frame thickness
-    outlineGeo = rectAnnulus(rect.halfW + bar, rect.halfH + bar, rect.halfW - bar, rect.halfH - bar);
-    fillGeo = null; // an open gateway — nothing drawn inside it
-  } else if (hazard) {
-    outlineGeo = squareAnnulus(radius + tube, radius - tube);
-    fillGeo = squareAnnulus(radius * 0.94, radius * 0.18);
-  } else {
-    outlineGeo = new THREE.TorusGeometry(radius, tube, 16, 44);
-    fillGeo = new THREE.RingGeometry(radius * 0.18, radius * 0.94, 44);
+/** Every frame: keep it on its spot, standing on the ground as it is known. */
+function updateModel(): void {
+  if (!modelGroup) return;
+  modelGroup.position.copy(modelAt).add(terrain.anchor.worldOffset);
+  // The ground is asked for again each frame, as it is for the hoops: the
+  // first answer comes from a coarse tile, and the finer ground settles it.
+  const ground = terrain.groundHeight(modelGroup.position);
+  if (ground !== undefined) modelGroup.position.y = ground + MODEL_LIFT_M;
+  if (modelMark) {
+    const fade = markFade();
+    modelMark.visible = fade > 0;
+    modelMark.material.opacity = fade;
+    sizeMark(camera, MARK_SCREEN_SIM);
   }
-  const mesh = new THREE.Mesh(
-    outlineGeo,
-    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0, side: THREE.DoubleSide }),
-  );
-  mesh.quaternion.copy(hazard || rect ? quatSquare : quat); // opening faces down the course
-  mesh.position.copy(center);
-  ringGroup.add(mesh);
-  let halo: THREE.Mesh | null = null;
-  if (fillGeo) {
-    halo = new THREE.Mesh(
-      fillGeo,
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0, side: THREE.DoubleSide }),
-    );
-    mesh.add(halo);
-  }
-  // Posts + banner ride on the gate's mesh, so they follow its pose and the
-  // large-world rebase for free.
-  const decor = rect ? gateDecor(rect.halfW, rect.halfH, color) : null;
-  if (decor) mesh.add(decor);
-  rings.push({
-    center, s, radius, points, hazard, mesh, halo, decor, done: false, isStart, baseColor: color,
-    halfW: rect?.halfW, halfH: rect?.halfH,
+}
+
+/** Out of the belly camera's picture: the hoops are for the pilot's eye, not
+ *  for the sensor, and edge-on to it they would only be a flicker of white. */
+function showHoops(on: boolean): void {
+  for (const hoop of hoops) hoop.group.visible = on;
+}
+
+buildHoops();
+loadModel();
+
+/**
+ * ══ THE TARGETS ═════════════════════════════════════════════════════════════
+ *
+ * Marks pinned to the GROUND on the moving map — they do not travel with the
+ * aircraft any more than a town does. Each one is a picture in public/icons
+ * named for the threat it is: ta412.png, ta422.png, and so on; `file` below is
+ * that name without the .png.
+ *
+ * WHERE EACH ONE STANDS, in one of two ways:
+ *
+ *   BESIDE THE ROUTE — the usual way, since that is how they are thought of:
+ *
+ *       { file: 'ta412', after: 2, run: 3_000, left: 2_500 },
+ *
+ *     `after` is the waypoint it is measured from (2 = 2A), `run` how many
+ *     metres on from there along the route, and `left` how far out to the side
+ *     — to the LEFT of the way the aircraft is flying. A minus puts it right.
+ *     Both may be 0; `run` past the end of that leg simply carries on straight.
+ *
+ *   OR AT A PLACE — when the spot is known:
+ *
+ *       { file: 'ta432', at: { lat: 33.35, lon: 35.62 } },
+ *
+ * WHICH LOOK IT IS DRAWN WITH, `kind`:
+ *
+ *   'threat'  the default, left out — the red triangles, ta412.png and the
+ *             rest. Size, anchor and opacity come from the --target-* knobs.
+ *   'after'   the grey struck mark, Target_after.png. The same place-keeping
+ *             in every way; it only reads a second family of knobs,
+ *             --target-after-*, so the kinds are sized and placed on their
+ *             spot apart from one another.
+ *   'befor'   the mark as it is before the strike, Target_befor.png, on a
+ *             third family of its own: --target-befor-*.
+ *   'truck'   the launcher's own mark, which stands on the same spot of ground
+ *             as the model in the simulator AND ANSWERS A PRESS: pressing it
+ *             on the map swaps its picture for the file of the same name with
+ *             _selected on the end, and pressing it again puts the first one
+ *             back. Its knobs are --target-truck-*.
+ *
+ * `kind` only chooses the knobs; `file` still says which picture. A second
+ * struck-mark picture would be another line with the same kind and its own
+ * file name.
+ *
+ * Add a line and a target appears, remove one and it is gone. Their size on
+ * the screen is in map.html, which is about how they look rather than where
+ * they are.
+ */
+interface TargetPlan {
+  file: string;
+  /** which family of look knobs it reads; left out, 'threat' */
+  kind?: 'threat' | 'after' | 'befor' | 'truck';
+  /** beside the route */
+  after?: number; run?: number; left?: number;
+  /** …or at a place of its own */
+  at?: { lat: number; lon: number };
+}
+
+const TARGETS: TargetPlan[] = [
+  // The launcher's mark, on the very spot the model stands on in the
+  // simulator — it takes its place from MODEL_AT, so moving the model moves
+  // the mark with it and the two can never drift apart. Press it on the map
+  // and it puts on truck_icon_selected.png; press it again and it takes it
+  // off. The triangles are not put on the map any more, but the machinery is
+  // untouched: a line here brings one back.
+  { file: 'truck_icon', kind: 'truck', at: MODEL_AT },
+];
+
+/**
+ * ══ THE AREAS ═══════════════════════════════════════════════════════════════
+ *
+ * Stretches of ground — Red Area.png and any other picture like it — laid on
+ * the map the way a field is laid on the earth. An area is NOT a symbol: it is
+ * a piece of ground, so unlike the targets it
+ *
+ *   • has a size in METRES, not in screen pixels, and therefore grows when you
+ *     zoom in and shrinks when you zoom out, exactly like a town or a lake;
+ *   • TURNS WITH THE GROUND, so it keeps the compass direction it was given
+ *     however the aircraft is pointing.
+ *
+ * WHERE IT STANDS — the same two ways as a target, and it is the MIDDLE of the
+ * picture that goes on the spot:
+ *
+ *   BESIDE THE ROUTE:
+ *
+ *       { file: 'Red Area', after: 3, run: 2_000, left: 4_000, width: 9_000 },
+ *
+ *     `after` the waypoint measured from (3 = 3A), `run` metres on from it
+ *     along the route, `left` metres out to the side — plus is LEFT of the way
+ *     ahead, minus is right.
+ *
+ *   AT A PLACE:
+ *
+ *       { file: 'Red Area', at: { lat: 33.42, lon: 35.63 }, width: 9_000 },
+ *
+ * ITS SIZE AND THE WAY IT LIES:
+ *
+ *   `width`  how many METRES of ground the picture covers across. The height
+ *            follows the picture's own shape, so the artwork is never
+ *            squashed. 9_000 is a nine-kilometre-wide area.
+ *   `turn`   which way the picture's own UP points, in degrees of the compass:
+ *            0 (or left out) is north, 90 east, 180 south, 270 west. The area
+ *            keeps that direction whatever the aircraft does.
+ *
+ * How strongly they are drawn, and whether at all, is --area-* in map.html.
+ */
+interface AreaPlan {
+  file: string;
+  /** beside the route */
+  after?: number; run?: number; left?: number;
+  /** …or at a place of its own */
+  at?: { lat: number; lon: number };
+  /** metres across the ground; the height follows the picture's shape */
+  width: number;
+  /** degrees from north that the picture's own up points; 0 left out */
+  turn?: number;
+}
+
+const AREAS: AreaPlan[] = [
+  { file: 'Red Area', after: 1, run: 3_000, left: 6_500, width: 9_000, turn: 0 },
+];
+
+/** The areas as the map wants them: a picture, a place, a size on the ground
+ *  and the way it lies. */
+function areaMarks(): NonNullable<MapFix['areas']> {
+  return AREAS.map((a) => {
+    const at = a.at ?? besideRoute(a.after ?? 1, a.run ?? 0, a.left ?? 0);
+    return { file: a.file, lat: at.lat, lon: at.lon, width: a.width, turn: a.turn ?? 0 };
   });
 }
 
-function setRingColor(ring: Ring, color: number): void {
-  for (const m of ringMaterials(ring)) (m as THREE.MeshBasicMaterial).color.set(color);
+/** A place out to the side of the route: `run` metres on from a waypoint,
+ *  then `left` metres square to the left of the way ahead. */
+function besideRoute(after: number, run: number, left: number): { lat: number; lon: number } {
+  const pts = ROUTE_WAYPOINTS;
+  const i = Math.min(Math.max(0, Math.round(after) - 1), pts.length - 2);
+  const a = pts[i];
+  const b = pts[i + 1];
+  const kx = Math.cos((a.lat * Math.PI) / 180);
+  const bearing = (Math.atan2((b.lon - a.lon) * kx, b.lat - a.lat) * 180) / Math.PI;
+  const on = legFrom(a, bearing, run);
+  return legFrom(on, bearing - 90, left);      // 90° off the nose is the wing
 }
 
 /**
- * What a ring is worth for a crossing `miss` of the way out from its centre
- * (0 = dead centre, 1 = on the rim). Full value inside the bullseye, then a
- * linear fall-off to RIM_SHARE of it; never less than 1 point.
+ * ══ THE THREAT CUES ═════════════════════════════════════════════════════════
+ *
+ * Each one is a place on the ground where a sequence plays out on the map:
+ * SEARCHING, then TRACKING, then LAUNCH, with a line drawn to the aircraft and
+ * a sound at each change. How long each stretch lasts, how the rings look and
+ * what they sound like is the same for all of them and lives in map.html; what
+ * is here is WHICH set of pictures a cue uses and WHERE it stands.
+ *
+ *   { set: '_22', after: 2, run: 0, left: 2_500 },
+ *
+ * `set` is the tail of the picture files — '_22' uses searching_icon_ring_22,
+ * tracking_icon_ring_22 and Launch_icon_ring_22; '' uses the plain three.
+ * `after`, `run` and `left` place it exactly as a target is placed: so many
+ * metres along the route from a waypoint, then so many out to the left of the
+ * line (minus for the right).
+ *
+ * WHEN IT STARTS: as the aircraft draws level with it along the route. `lead`
+ * moves that moment, in metres: minus starts it earlier, plus later.
  */
-function ringAward(ring: Ring, miss: number): number {
-  if (ring.hazard) return ring.points; // a hazard costs the same wherever it is hit
-  const t = Math.min(1, Math.max(0, (miss - BULLSEYE_FRACTION) / (1 - BULLSEYE_FRACTION)));
-  return Math.max(1, Math.round(ring.points * (1 - (1 - RIM_SHARE) * t)));
+interface CuePlan {
+  set: string;
+  after: number; run: number; left: number;
+  lead?: number;
+  // The four stretches of the sequence, in SECONDS. Leave one out and the map
+  // uses its own knob for it (--cue-delay / --cue-searching / --cue-tracking /
+  // --cue-launch in map.html); write one here and it holds for THIS set only.
+  delay?: number;      // the quiet wait after the gate, before the first ring
+  searching?: number;  // how long SEARCHING shows
+  tracking?: number;   // how long TRACKING shows
+  launch?: number;     // how long LAUNCH shows
 }
 
-/** Flew THROUGH a ring: score a green target or penalize a red hazard. */
-function passRing(ring: Ring, miss: number): void {
-  ring.done = true;
-  if (ring.isStart) { startRun(ring); return; }
-  const award = ringAward(ring, miss);
-  score += award;
-  if (ring.hazard) {
-    setRingColor(ring, 0x7a2020); // red entered by mistake
-    showPop(`${award}`, '#ff6b6b'); // "-10"
-  } else {
-    setRingColor(ring, COLOR_DONE);
-    targetsCleared++;
-    showPop(`+${award}`, HUD_GREEN);
+const CUES: CuePlan[] = [
+  // The one set, the three pictures with no tail to their names.
+  //
+  // IT LIGHTS AT 3A AND STANDS WELL BEYOND IT. Those are two different
+  // things, and this is how they are told apart:
+  //
+  //   run   where the rings STAND — metres on from 3A ALONG THE ROUTE, which
+  //         is to say up the screen. This is the one that lifts them: at 0
+  //         they stand level with the aircraft, which is why they came out
+  //         low however much `left` was changed, since `left` only ever
+  //         moves them sideways.
+  //   lead  how far the moment of lighting is moved from where they stand.
+  //         MINUS THE SAME NUMBER brings that moment back to 3A, so keeping
+  //         lead = -run lights them at the waypoint however far up the
+  //         screen they have been put.
+  //   left  out to the side; minus is to the RIGHT of the line.
+  { set: '', after: 3, run: 8_000, lead: -8_000, left: -6_500,
+    searching: 10, tracking: 10, launch: 15 },
+];
+
+/** How far along the route a point beside it stands, in metres. */
+function alongTo(after: number, run: number): number {
+  const pts = ROUTE_WAYPOINTS;
+  const i = Math.min(Math.max(0, Math.round(after) - 1), pts.length - 2);
+  let walked = 0;
+  const kx = Math.cos((pts[0].lat * Math.PI) / 180);
+  for (let leg = 0; leg < i; leg++) {
+    const a = pts[leg];
+    const b = pts[leg + 1];
+    walked += Math.hypot((b.lon - a.lon) * kx, b.lat - a.lat) * 111_320;
   }
-  updateScore();
+  return walked + run;
 }
 
-/** Crossed a ring's plane outside it. No penalty: a missed green is just marked, a red is safely dodged. */
-function skipRing(ring: Ring): void {
-  ring.done = true;
-  // The start gate is a measurement trigger, not a target: the run begins the
-  // moment its plane is crossed, even if the pilot went around the rim.
-  if (ring.isStart) { startRun(ring); return; }
-  if (!ring.hazard) setRingColor(ring, COLOR_MISS);
+/** The cues as the map wants them: a set of pictures, a place, and the point
+ *  along the route at which the sequence begins. */
+function cueMarks(): NonNullable<MapFix['cues']> {
+  return CUES.map((c) => {
+    const at = besideRoute(c.after, c.run, c.left);
+    return {
+      set: c.set,
+      lat: at.lat,
+      lon: at.lon,
+      gate: alongTo(c.after, c.run) + (c.lead ?? 0),
+      delay: c.delay,
+      searching: c.searching,
+      tracking: c.tracking,
+      launch: c.launch,
+    };
+  });
 }
 
-/** Crossed the start gate — the run (and everything measured about it) begins. */
-function startRun(gate: Ring): void {
-  runArmed = true;
-  runMs = 0;
-  runStartedAt = performance.now();
-  // Closing the gate is what hands the HUD over to the first real ring: the
-  // reveal, the compass bearing and the station strip all pick the lowest `s`
-  // that is not done, and the gate's `s` is the lowest of all.
-  gate.done = true;
-  setRingColor(gate, COLOR_START_DONE);
-  // No pop here: the gate vanishing is the whole cue. A banner over the HUD at
-  // the moment the measurement starts is one more thing to read while flying.
+/** The targets as the map wants them: a picture and a place. */
+function targetMarks(): NonNullable<MapFix['targets']> {
+  return TARGETS.map((t) => {
+    const at = t.at ?? besideRoute(t.after ?? 1, t.run ?? 0, t.left ?? 0);
+    return { id: t.file, lat: at.lat, lon: at.lon, kind: t.kind };
+  });
+}
+
+/**
+ * THE LINE BEHIND THE AIRCRAFT AT ENTRY, in metres. The route is drawn
+ * carrying straight on backwards out of its first waypoint for this distance,
+ * so that the moment the flight begins there is already a stretch of route
+ * behind the aircraft, in the flown colour, as if it had been flying for some
+ * minutes. It is LINE ONLY: no waypoint sits on it, nothing is numbered
+ * there, and the route's own first waypoint is still 1A. Set it to 0 and the
+ * route simply begins at its first waypoint.
+ *
+ * (The aircraft is put down SPAWN_BACK — 2.5 km — behind the first waypoint,
+ * so anything longer than that shows behind it.)
+ */
+const ROUTE_LEAD_IN_M = 10_000;
+
+/** Where that line starts: straight back out of the first leg. */
+function routeLeadIn(): { lat: number; lon: number } | undefined {
+  if (ROUTE_LEAD_IN_M <= 0 || ROUTE_WAYPOINTS.length < 2) return undefined;
+  const [a, b] = ROUTE_WAYPOINTS;                       // the first leg, a → b
+  const kx = Math.cos((a.lat * Math.PI) / 180);         // lon degrees are shorter up here
+  const dLat = b.lat - a.lat;
+  const dLon = (b.lon - a.lon) * kx;
+  const lengthDeg = Math.hypot(dLat, dLon) || 1;
+  const t = ROUTE_LEAD_IN_M / 111_320 / lengthDeg;      // share of that leg, going backwards
+  return { lat: a.lat - dLat * t, lon: a.lon - (dLon * t) / kx };
+}
+
+/** Append the aircraft's position to the flown track, thinned to TRAIL_STEP. */
+const _trailAbs = new THREE.Vector3();
+function recordTrail(): void {
+  _trailAbs.copy(camera.position).sub(terrain.anchor.worldOffset);
+  const last = trail[trail.length - 1];
+  if (last && last.distanceTo(_trailAbs) < TRAIL_STEP) return;
+  trail.push(_trailAbs.clone());
+  if (trail.length > TRAIL_MAX) trail.shift();
+}
+
+/** One path update: extend the track. The route itself never changes here. */
+function updatePath(dt: number): void {
+  pathTimer += dt;
+  if (pathTimer < 1 / PATH_UPDATE_HZ) return;
+  pathTimer = 0;
+  recordTrail();
+}
+
+/** Drop the track — a respawn starts a fresh one. The route is untouched. */
+function clearPath(): void {
+  trail.length = 0;
+}
+
+// -- the course centerline ---------------------------------------------------
+
+/** How far (m) BEHIND the course start the aircraft spawns. Raise it to give
+ *  more room to settle before reaching the start point. */
+const SPAWN_BACK = 2500;
+/** Constant course direction (start → end): the heading the aircraft launches
+ *  on, and the direction E levels the nose back to. */
+const courseNormal = new THREE.Vector3(0, 0, -1);
+/** Absolute (rebase-independent) centerline start — the spawn reference. */
+const courseStart = new THREE.Vector3();
+
+/** Resolve the course's endpoints into world space. */
+function setupCourse(): void {
+  const a = worldPoint(world, COURSE.start.lat, COURSE.start.lon, COURSE.start.alt);
+  const b = worldPoint(world, COURSE.end.lat, COURSE.end.lon, COURSE.end.alt);
+  courseStart.copy(a);
+  courseNormal.copy(b).sub(a).normalize();
 }
 
 let popTimer = 0;
@@ -845,8 +1450,6 @@ function showPop(text: string, color: string): void {
 
 let started = false;
 let participant = { name: '', subject: '' };
-let score = 0;
-let targetsCleared = 0;
 
 const flight = {
   speed: SPEED_START,          // |velocity| in m/s (for the HUD; set by the model)
@@ -856,15 +1459,9 @@ const flight = {
   crashed: false,
 };
 
-function updateScore(): void {
-  scoreValEl.textContent = String(score);
-  ringsValEl.textContent = `${targetsCleared} / ${totalTargets}`;
-  routeValEl.textContent = String(routeIndex + 1);
-}
-
 function resetCamera(): void {
-  // Spawn on the course centerline, just behind the start, aimed straight down
-  // the course. The first ring sits a bit ahead (not dead on the start).
+  // Spawn on the course centerline, SPAWN_BACK metres behind the start point,
+  // aimed straight down the course.
   const startAbs = courseStart.clone().addScaledVector(courseNormal, -SPAWN_BACK);
   camera.position.copy(startAbs).add(terrain.anchor.worldOffset);
   camera.up.set(0, 1, 0);
@@ -882,7 +1479,6 @@ function resize(): void {
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   sizeCompass();
-  sizeDesignator();
   sizeAttitude();
   sizeTape(spdTape);
   sizeTape(altTape);
@@ -891,58 +1487,38 @@ window.addEventListener('resize', resize);
 
 function crash(): void {
   flight.crashed = true;
-  crashes++;
   crashEl.style.display = 'block';
 }
 
 /**
- * Restart the whole run from the start of the course: reset the aircraft,
- * the score, and every ring. Bound to R (any time) and to a tap after a crash.
- * It never returns to the login screen — the participant stays signed in.
+ * Put the aircraft back on the start point, level and at the spawn airspeed.
+ * Bound to R (any time) and to a tap after a crash. It never returns to the
+ * login screen — the participant stays signed in.
  */
 function resetRun(): void {
   flight.crashed = false;
   flight.angVel.set(0, 0, 0);
   flight.speed = SPEED_START;
   flight.throttle = THROTTLE_START;
-  score = 0;
-  targetsCleared = 0;
-  clearRun(); // a restart is a fresh attempt: clock, crashes and gate all reset
-  for (const ring of rings) {
-    ring.done = false;
-    setRingColor(ring, ring.baseColor);
-  }
-  updateScore();
-  havePrev = false; // drop the stale ring-crossing history after the jump
+  runId++; // a new run: the moving map starts a fresh track
+  fuelStartedAt = performance.now(); // and a full tank
+  clearPath();
+  camPanDown = 0;      // the belly camera back to where it rests
+  camPanSide = 0;
   resetCamera();
   crashEl.style.display = 'none';
 }
 
-/**
- * Switch to another route (keys 1 / 2 / 3). The participant stays signed in:
- * only the rings are rebuilt and the score starts again from zero, so the same
- * pilot can fly all three routes one after another. Pressing the key of the
- * route already being flown does nothing (use R to restart a run).
- */
-function switchRoute(index: number): void {
-  if (index === routeIndex || index < 0 || index >= routes().length) return;
-  routeIndex = index;
-  buildCourse(routes()[routeIndex]);
-  resetRun(); // zeroes the score, the clock and the crash count for the new route
-  showPop(routes()[routeIndex].name, CMP_COLOR_TARGET);
-}
 
 /**
  * Continue (E) — available at any time, crashed or not. Both cases level the
- * wings and the nose back along the course and leave the rings untouched; they
- * differ in what else they touch:
+ * wings and the nose back along the course; they differ in what else they
+ * touch:
  *
  *   crashed    — the aircraft is lifted back to the course's start altitude
- *                over the same spot, the throttle returns to THROTTLE_START,
- *                and the run pays CRASH_PENALTY.
+ *                over the same spot and the throttle returns to THROTTLE_START.
  *   in flight  — a pure attitude recovery: same position, same altitude, same
- *                airspeed, same throttle, same score. No penalty, because
- *                nothing was lost — the pilot only straightens out.
+ *                airspeed, same throttle — the pilot only straightens out.
  */
 const _contLook = new THREE.Vector3();
 function continueFlight(): void {
@@ -964,12 +1540,6 @@ function continueFlight(): void {
   const speed = wasCrashed ? SPEED_START : flight.speed;
   flight.vel.copy(forward).multiplyScalar(speed);
   flight.speed = speed;
-  if (wasCrashed) {
-    score += CRASH_PENALTY;
-    updateScore();
-    showPop(`${CRASH_PENALTY}`, '#ff6b6b'); // "-30"
-    havePrev = false; // don't count the vertical jump as a ring crossing
-  }
   crashEl.style.display = 'none';
 }
 
@@ -977,15 +1547,16 @@ function continueFlight(): void {
 
 const keys = new Set<string>();
 const justPressed = new Set<string>();
-window.addEventListener('keydown', (e) => {
+
+function keyDown(code: string): void {
   if (!started) return;
-  // Esc stops the route; it is handled here rather than in the frame loop
-  // because the loop stops stepping as soon as the simulator is paused.
-  if (e.code === 'Escape') { e.preventDefault(); if (!paused) pauseRoute(); return; }
-  if (!keys.has(e.code)) justPressed.add(e.code);
-  keys.add(e.code);
-});
-window.addEventListener('keyup', (e) => keys.delete(e.code));
+  if (!keys.has(code)) justPressed.add(code);
+  keys.add(code);
+}
+const keyUp = (code: string): void => { keys.delete(code); };
+
+window.addEventListener('keydown', (e) => keyDown(e.code));
+window.addEventListener('keyup', (e) => keyUp(e.code));
 window.addEventListener('blur', () => keys.clear());
 
 // -- input: touch ------------------------------------------------------------
@@ -1075,9 +1646,10 @@ window.addEventListener('gamepadconnected', (e) => {
  * Axis probe. While the login screen is still up, every axis that moves is
  * logged with its device and index — so a new stick can be mapped by waggling
  * it and reading the console, instead of guessing the numbering. It stops the
- * moment the run starts, so it never logs during a flight.
+ * moment the flight starts, so it never logs while flying.
  */
 const gpProbe = new Map<string, number[]>();
+const gpButtons = new Map<string, boolean[]>();
 function probeGamepads(): void {
   if (started) return;
   for (const p of navigator.getGamepads ? navigator.getGamepads() : []) {
@@ -1091,6 +1663,18 @@ function probeGamepads(): void {
       }
     }
     gpProbe.set(p.id, last);
+    // …and every button pressed, so the camera's four can be checked against
+    // what this throttle actually reports.
+    const was = gpButtons.get(p.id) ?? [];
+    for (let i = 0; i < p.buttons.length; i++) {
+      const down = p.buttons[i].pressed;
+      if (down && !was[i]) {
+        const role = isThrottlePad(p) ? 'THROTTLE' : 'STICK';
+        console.log(`[gamepad] ${role} "${p.id}" → button ${i} pressed`);
+      }
+      was[i] = down;
+    }
+    gpButtons.set(p.id, was);
   }
 }
 
@@ -1157,81 +1741,9 @@ function rebaseLargeWorld(): void {
   if (shift.x !== 0 || shift.z !== 0) {
     camera.position.add(shift);
     terrain.rebase(shift);
-    ringGroup.position.copy(terrain.anchor.worldOffset); // keep rings glued to terrain
   }
 }
 
-/** Detect flying through each open ring: plane crossing within the radius. */
-const camAbs = new THREE.Vector3();
-const prevCamAbs = new THREE.Vector3();
-const crossing = new THREE.Vector3();
-let havePrev = false;
-/** Is `crossing` inside the ring's opening? Circles use the radius, the
- *  rectangular start gate its own half-sizes. */
-const _ringLocal = new THREE.Vector3();
-function insideRing(ring: Ring): boolean {
-  if (ring.halfW === undefined || ring.halfH === undefined) {
-    return crossing.distanceTo(ring.center) <= ring.radius;
-  }
-  _ringLocal.copy(crossing).sub(ring.center);
-  return Math.abs(_ringLocal.dot(courseRight)) <= ring.halfW && Math.abs(_ringLocal.y) <= ring.halfH;
-}
-
-function ringCheck(): void {
-  // Absolute camera position = user-space − worldOffset (rebase-independent).
-  camAbs.copy(camera.position).sub(terrain.anchor.worldOffset);
-  if (!havePrev) { prevCamAbs.copy(camAbs); havePrev = true; return; }
-
-  for (const ring of rings) {
-    if (ring.done) continue;
-    const fPrev = prevCamAbs.clone().sub(ring.center).dot(courseNormal);
-    const fCur = camAbs.clone().sub(ring.center).dot(courseNormal);
-    if (fPrev === fCur) continue;
-    if ((fPrev <= 0 && fCur > 0) || (fPrev >= 0 && fCur < 0)) {
-      const t = fPrev / (fPrev - fCur); // param of plane crossing along the step
-      crossing.lerpVectors(prevCamAbs, camAbs, t);
-      if (insideRing(ring)) passRing(ring, crossing.distanceTo(ring.center) / ring.radius);
-      else skipRing(ring); // crossed its depth outside the rim → miss/dodge
-    }
-  }
-  prevCamAbs.copy(camAbs);
-}
-
-/**
- * Progressive reveal: draw only the nearest rings ahead solid, fading farther
- * ones to transparent so the pilot can't scan the whole course in advance.
- */
-const revTmp = new THREE.Vector3();
-function revealUpdate(): void {
-  const sPlane = revTmp.copy(camera.position).sub(terrain.anchor.worldOffset).sub(courseStart).dot(courseNormal);
-  // the "next" station: the nearest ring not yet flown through/past
-  let nextS = Infinity;
-  for (const ring of rings) if (!ring.done && ring.s < nextS) nextS = ring.s;
-  for (const ring of rings) {
-    if (ring.isStart) { // always solid until crossed — it must never be missed
-      const op = ring.done ? 0 : 1; // crossed → the gate is behind us, hide it
-      for (const m of ringMaterials(ring)) m.opacity = op;
-      continue;
-    }
-    const ahead = ring.s - sPlane;
-    let op: number;
-    if (ahead < -80) op = 0; // just passed → gone
-    else if (ahead < 140) op = 1; // at the ring's depth → full
-    else {
-      let rank = 0; // how many upcoming rings are nearer than this one
-      for (const o of rings) {
-        const oa = o.s - sPlane;
-        if (oa >= 140 && oa < ahead) rank++;
-      }
-      op = rank < REVEAL_FULL ? 1 : rank < REVEAL_VIS ? 1 - (rank - REVEAL_FULL) / (REVEAL_VIS - REVEAL_FULL) : 0;
-    }
-    // The ring(s) to fly through now read solid; everything after is see-through.
-    const isNext = !ring.done && ring.s === nextS;
-    const { outline, fill } = OPACITY[ring.hazard ? 'red' : 'blue'][isNext ? 'next' : 'later'];
-    (ring.mesh.material as THREE.MeshBasicMaterial).opacity = op * outline;
-    if (ring.halo) (ring.halo.material as THREE.MeshBasicMaterial).opacity = op * fill;
-  }
-}
 
 function crashCheck(): void {
   if (flight.crashed) return; // R / tap handling lives in the frame loop
@@ -1302,25 +1814,7 @@ const CMP_COLOR_MINOR = HUD_GREEN;    // short ticks (minor, every 10°)
 const CMP_COLOR_MAJOR = HUD_GREEN;    // long ticks (every 30°) + their label (number/letter)
 const CMP_COLOR_POINTER = HUD_GREEN;  // centre pointer line + the big heading number above it
 
-const CMP_COLOR_TARGET = '#' + COLOR_TARGET.toString(16).padStart(6, '0'); // same blue as the rings
 
-/** Hide the compass dot once the next ring is this close (m, along the course):
- *  its bearing swings wildly as you fly through it. The following ring's dot
- *  appears as soon as this one is passed or skipped. */
-const CMP_TARGET_HIDE_DIST = 400;
-
-/** Compass bearing (deg) from the aircraft to the next blue ring, or null when
- *  none is left or it's about to be flown through. */
-const _tgtVec = new THREE.Vector3();
-function nextTargetBearing(): number | null {
-  let next: Ring | null = null;
-  for (const ring of rings) if (!ring.done && !ring.hazard && (!next || ring.s < next.s)) next = ring;
-  if (!next) return null;
-  _tgtVec.copy(next.center).add(terrain.anchor.worldOffset).sub(camera.position);
-  if (_tgtVec.dot(courseNormal) < CMP_TARGET_HIDE_DIST) return null; // distance ahead along the course
-  const deg = Math.atan2(_tgtVec.x, -_tgtVec.z) * 180 / Math.PI;
-  return (deg % 360 + 360) % 360;
-}
 
 function drawCompass(): void {
   const ctx = compassCtx, W = cmpW, H = cmpH;
@@ -1367,20 +1861,6 @@ function drawCompass(): void {
 
   // fixed centre pointer, from just under the readout down past the ticks
   strokedLine(cx, 35, cx, midY + 21, 2.0, CMP_COLOR_POINTER);
-
-  // next blue target's bearing: a small blue dot on the tick line (pinned to
-  // the tape's end, half-faded, when it's outside the visible span)
-  const tgt = nextTargetBearing();
-  if (tgt !== null) {
-    const diff = ((tgt - heading + 540) % 360) - 180;
-    const lim = W / 2 - 8;
-    const x = cx + Math.max(-lim, Math.min(lim, diff * CMP_DEG));
-    ctx.globalAlpha = Math.abs(diff * CMP_DEG) > lim ? 0.5 : 1;
-    ctx.beginPath(); ctx.arc(x, midY, 5, 0, Math.PI * 2);
-    ctx.fillStyle = CMP_COLOR_TARGET; ctx.fill();
-    ctx.strokeStyle = HUD_OUTLINE; ctx.lineWidth = 1.2; ctx.stroke();
-    ctx.globalAlpha = 1;
-  }
 
   // big current-heading readout, centred at top
   ctx.font = '500 20px Roboto, system-ui, sans-serif';
@@ -1483,59 +1963,6 @@ function drawTape(t: Tape, value: number): void {
 
   // unit label under the tape
   text(t.unit, edge, H - unitH / 2, 'right', '500 11px Roboto, system-ui, sans-serif');
-}
-
-// -- target designator ---------------------------------------------------------
-// HUD brackets around the next ring(s) to fly through, drawn in screen space so
-// they're readable at any range — the ring itself is only a few pixels wide
-// kilometres out. Moves to the next station the instant the current one is
-// passed. Red hazards at that station get an "X" box (avoid), greens a
-// bracket box (fly through).
-const SHOW_DESIGNATOR = false;
-const DESIG_MIN_HALF = 14; // px — never smaller than this, however far the ring
-let desW = 0, desH = 0;
-function sizeDesignator(): void {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  desW = window.innerWidth; desH = window.innerHeight;
-  designatorEl.width = Math.round(desW * dpr);
-  designatorEl.height = Math.round(desH * dpr);
-  designatorCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-}
-const _desP = new THREE.Vector3();
-const _desView = new THREE.Vector3();
-function drawDesignator(): void {
-  const ctx = designatorCtx;
-  ctx.clearRect(0, 0, desW, desH);
-  if (!SHOW_DESIGNATOR || flight.crashed) return;
-  let nextS = Infinity;
-  for (const ring of rings) if (!ring.done && ring.s < nextS) nextS = ring.s;
-  const off = terrain.anchor.worldOffset;
-  const pxPerRad = desH / 2 / Math.tan((camera.fov * Math.PI) / 360);
-  for (const ring of rings) {
-    if (ring.done || ring.s !== nextS) continue;
-    _desP.copy(ring.center).add(off);
-    _desView.copy(_desP).applyMatrix4(camera.matrixWorldInverse);
-    if (_desView.z > -1) continue; // behind the aircraft
-    _desP.project(camera);
-    const x = (_desP.x + 1) / 2 * desW, y = (1 - _desP.y) / 2 * desH;
-    const half = Math.max(DESIG_MIN_HALF, (ring.radius / -_desView.z) * pxPerRad * 1.15);
-    const c = Math.min(half * 0.45, 12); // bracket arm length
-    ctx.lineWidth = 2; ctx.lineCap = 'square';
-    const path = (): void => {
-      ctx.beginPath();
-      for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
-        const cx = x + sx * half, cy = y + sy * half;
-        ctx.moveTo(cx - sx * c, cy); ctx.lineTo(cx, cy); ctx.lineTo(cx, cy - sy * c);
-      }
-      if (ring.hazard) { // X through the middle: avoid
-        const k = Math.min(half * 0.5, 10);
-        ctx.moveTo(x - k, y - k); ctx.lineTo(x + k, y + k);
-        ctx.moveTo(x + k, y - k); ctx.lineTo(x - k, y + k);
-      }
-    };
-    path(); ctx.strokeStyle = HUD_OUTLINE; ctx.lineWidth = 3.4; ctx.stroke();
-    path(); ctx.strokeStyle = HUD_GREEN; ctx.lineWidth = 2; ctx.stroke();
-  }
 }
 
 // -- attitude symbology (F-15 / F-16 style) ------------------------------------
@@ -1689,148 +2116,6 @@ function drawAttitude(): void {
 }
 const _WORLD_UP = new THREE.Vector3(0, 1, 0);
 
-// -- pause, route hand-over and the session's data ---------------------------
-
-/** True while Esc has frozen the simulator and the dialog is up. */
-let paused = false;
-/** True once all three routes are done — the session is over. */
-let sessionDone = false;
-
-/**
- * Esc — stop this route. The simulator freezes exactly where it is (nothing is
- * stepped while `paused`), the clock stops, and the participant is asked
- * whether to move on. Answering "No" resumes from the identical state.
- */
-function pauseRoute(): void {
-  if (!started || paused || sessionDone) return;
-  holdClock();
-  paused = true;
-  const r = routes()[routeIndex];
-  pauseTitleEl.textContent = `${r.name} stopped`;
-  // Deliberately no numbers here: the dialog must not show the participant
-  // their time, score or rings. The export is the only way out of the data.
-  pauseCsvEl.disabled = !haveCsvData();
-  pauseEl.classList.add('is-open');
-}
-
-/** "No" — carry on exactly where the aircraft was frozen. */
-function resumeRoute(): void {
-  paused = false;
-  pauseEl.classList.remove('is-open');
-  resumeClock();
-  last = performance.now(); // don't bill the paused wall-clock to the physics
-  canvas.focus();
-}
-
-/** "Yes" — bank this route's row, then move to the next one (or finish). */
-function nextRoute(): void {
-  pauseEl.classList.remove('is-open');
-  paused = false;
-  recordRoute();
-  if (routeIndex < routes().length - 1) {
-    switchRoute(routeIndex + 1);
-    last = performance.now();
-    canvas.focus();
-  } else {
-    sessionDone = true;
-    finishInfoEl.textContent = sessionRows
-      .map((r) => `${REGIONS[r.region].label} route ${r.route}: ${r.seconds.toFixed(1)} s · score ${r.score} · rings ${r.rings}/${r.targets} · crashes ${r.crashes}`)
-      .join('\n');
-    finishEl.classList.add('is-open');
-  }
-}
-
-/** Append the finished attempt to the session, and back it up locally. */
-function recordRoute(): void {
-  sessionRows.push({
-    name: participant?.name ?? '',
-    subject: participant?.subject ?? '',
-    region: regionId,
-    route: routeIndex + 1,
-    seconds: courseElapsed(),
-    crashes,
-    score,
-    rings: targetsCleared,
-    targets: totalTargets,
-  });
-  // A copy in localStorage, so a refresh or a closed tab cannot lose the data.
-  try {
-    localStorage.setItem('flightsim.session', JSON.stringify(sessionRows));
-  } catch { /* private mode / storage disabled — the in-memory rows still stand */ }
-}
-
-const CSV_HEADER = [
-  'name', 'subject_id', 'region', 'route', 'seconds', 'crashes', 'score', 'rings_passed', 'rings_total',
-  'completed', // 1 = the route was finished and banked, 0 = exported mid-flight
-];
-/** RFC-4180 quoting: wrap in quotes and double any quote inside. */
-function csvCell(v: string | number): string {
-  const t = String(v);
-  return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
-}
-/** The live attempt, as a row — only once the start gate has armed the clock. */
-function liveRow(): RunRow | null {
-  if (!runArmed) return null;
-  return {
-    name: participant.name,
-    subject: participant.subject,
-    region: regionId,
-    route: routeIndex + 1,
-    seconds: courseElapsed(),
-    crashes,
-    score,
-    rings: targetsCleared,
-    targets: totalTargets,
-  };
-}
-
-/**
- * Everything measured so far: the banked rows, plus the route in the air right
- * now (flagged completed = 0) so an export mid-session never loses it. The live
- * row is computed on demand, never pushed into sessionRows, so banking that
- * same route later with Esc → Yes cannot duplicate it.
- */
-function csvRows(): { row: RunRow; completed: boolean }[] {
-  const rows = sessionRows.map((row) => ({ row, completed: true }));
-  const live = liveRow();
-  if (live) rows.push({ row: live, completed: false });
-  return rows;
-}
-
-/** Is there anything worth exporting? Drives the CSV button's enabled state. */
-const haveCsvData = (): boolean => csvRows().length > 0;
-
-function sessionCsv(): string {
-  const rows = csvRows().map(({ row: r, completed }) => [
-    r.name, r.subject, r.region, r.route, r.seconds.toFixed(2), r.crashes, r.score, r.rings, r.targets,
-    completed ? 1 : 0,
-  ].map(csvCell).join(','));
-  return [CSV_HEADER.join(','), ...rows].join('\r\n') + '\r\n';
-}
-
-function downloadCsv(): void {
-  if (!haveCsvData()) { showPop('Nothing measured yet', '#ff6b6b'); return; }
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-  const safe = (participant?.subject || 'participant').replace(/[^\w-]/g, '_');
-  const blob = new Blob([sessionCsv()], { type: 'text/csv;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `flight-${safe}-${regionId}-${stamp}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-  // Hand the focus back, so Space/Enter don't re-trigger the button instead of
-  // reaching the simulator.
-  if (!paused) canvas.focus();
-}
-
-
-pauseYesEl.addEventListener('click', nextRoute);
-pauseNoEl.addEventListener('click', resumeRoute);
-downloadCsvEl.addEventListener('click', downloadCsv);
-pauseCsvEl.addEventListener('click', downloadCsv);
 
 // -- frame loop --------------------------------------------------------------
 
@@ -1841,14 +2126,10 @@ function frame(now: number): void {
   const dt = Math.min((now - last) / 1000, 0.1);
   last = now;
 
-  if (started && !paused && !sessionDone) {
-    // R (any layout — it's the physical key) or a post-crash tap restarts the
-    // run from the start of the course; it never returns to the login screen.
+  if (started) {
+    // R (any layout — it's the physical key) or a post-crash tap puts the
+    // aircraft back on the start point; it never returns to the login screen.
     if (justPressed.has('KeyR') || tapReset) resetRun();
-    // 1 / 2 / 3 (top row or numpad) swap routes without a new login.
-    else if (justPressed.has('Digit1') || justPressed.has('Numpad1')) switchRoute(0);
-    else if (justPressed.has('Digit2') || justPressed.has('Numpad2')) switchRoute(1);
-    else if (justPressed.has('Digit3') || justPressed.has('Numpad3')) switchRoute(2);
     // E continues at any time — after a crash, or as a mid-air attitude recovery.
     // It is the physical key (KeyE), so Hebrew (ק) and English layouts both work.
     else if (justPressed.has('KeyE')) continueFlight();
@@ -1861,15 +2142,19 @@ function frame(now: number): void {
       physAcc -= PHYS_DT;
     }
     rebaseLargeWorld();
-    ringCheck();
     crashCheck();
+    updatePath(dt);
+    // M reopens the moving map if it was closed (the key press is the user
+    // gesture a popup needs). Focusing it does not steal the keyboard for long:
+    // the simulator keeps flying, and clicking back resumes control.
+    if (justPressed.has('KeyM')) openMapWindow();
+    mapFixTimer += dt;
+    if (mapFixTimer >= MAP_FIX_INTERVAL) { mapFixTimer = 0; sendMapFix(); }
     hud();
     drawCompass();
-    drawDesignator();
     drawAttitude();
   }
   terrain.update();
-  revealUpdate();
   loadingUi();
   probeGamepads();
 
@@ -1880,6 +2165,14 @@ function frame(now: number): void {
 
   justPressed.clear();
   tapReset = false;
+  if (started) {
+    panCamera(dt);
+    zoomCamera(dt);
+    watchTrigger();
+    sendCamFrame(performance.now());
+  }
+  updateHoops();
+  updateModel();
   renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }
@@ -1888,50 +2181,17 @@ function frame(now: number): void {
 
 function startSimulation(): void {
   started = true;
+  fuelStartedAt = performance.now(); // the fuel clock starts with the flight
   loginEl.style.display = 'none';
-  scorebarEl.style.display = 'flex';
   attitudeEl.style.display = 'block';
-  designatorEl.style.display = 'block';
   spdTapeEl.style.display = 'block';
   altTapeEl.style.display = 'block';
   compassEl.style.display = 'block';
   sizeCompass();
-  sizeDesignator();
   sizeTape(spdTape);
   sizeTape(altTape);
-  updateScore();
   resetCamera();
   canvas.focus();
-}
-
-/**
- * Pick a region on the login screen. The world is re-anchored on the spot and
- * the new terrain starts streaming straight away, so by the time the
- * participant has typed their details the map is usually ready; the Start
- * button keeps showing the progress either way. Only selectable before the run
- * begins — the anchor cannot move once the participant is flying.
- */
-function selectRegion(id: RegionId): void {
-  if (started || id === regionId) return;
-  regionId = id;
-  routeIndex = 0;
-  for (const b of regionBtns) {
-    const on = b.dataset.region === id;
-    b.classList.toggle('is-on', on);
-    b.setAttribute('aria-checked', String(on));
-  }
-  // Drop the old region's terrain and re-anchor on the new one.
-  clearCourse();
-  terrain.dispose();
-  world = worldFor(region());
-  terrain = makeTerrain(world);
-  ringGroup.position.set(0, 0, 0); // the new terrain starts at offset 0
-  buildCourse(routes()[routeIndex]);
-  resetRun();
-}
-
-for (const b of regionBtns) {
-  b.addEventListener('click', () => selectRegion(b.dataset.region as RegionId));
 }
 
 loginForm.addEventListener('submit', (e) => {
@@ -1941,19 +2201,24 @@ loginForm.addEventListener('submit', (e) => {
   const subject = subjectIdEl.value.trim();
   if (!name) { loginErr.textContent = 'Please enter your full name.'; return; }
   if (!subject) { loginErr.textContent = 'Please enter your participant ID.'; return; }
+  // The map is a popup, so it has to be opened by this very click.
+  if (!openMapWindow()) {
+    loginErr.textContent = 'Allow pop-ups for this page — the moving map could not open.';
+    return;
+  }
   loginErr.textContent = '';
   participant = { name, subject };
-  sessionRows.length = 0; // a fresh session for this participant
   startSimulation();
+  sendMapFix(); // put the aircraft on the map before the first frame is flown
 });
 
 if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
   crashEl.textContent = 'You crashed! Tap to reset.';
 }
 
-// Anchor the world, build the course, and start rendering immediately so the
-// region's terrain is already loading behind the login screen.
-buildCourse(routes()[routeIndex]);
+// Anchor the world on the course and start rendering immediately, so the
+// terrain around the start point is already loading behind the login screen.
+setupCourse();
 resetCamera();
 resize();
 requestAnimationFrame(frame);
@@ -1961,6 +2226,6 @@ requestAnimationFrame(frame);
 // dev convenience: expose live state for debugging in the console
 Object.defineProperty(window, '__sim', {
   configurable: true,
-  get: () => ({ terrain, flight, camera, rings, score, participant, courseNormal, courseStart, route: routes()[routeIndex], routeIndex,
-    elapsed: courseElapsed(), crashes, runArmed, sessionRows, regionId }),
+  get: () => ({ terrain, flight, camera, camCamera, participant, courseNormal, courseStart, course: COURSE,
+    scene, hoops, path: { trail, route: ROUTE_WAYPOINTS } }),
 });
