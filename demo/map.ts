@@ -43,6 +43,7 @@ let dirty = false;
  *  see "THE MARKINGS, AND THE ZOOM" near the end of this file. */
 const CAM_OVERLAY_ZOOM: Record<string, string> = {
   './icons/cam_5_layout.png': './icons/cam_5_layout_zoomin.png',
+  './icons/cam_3_layout.png': './icons/cam_3_layout_zoomin.png',
 };
 let camZoomed = false;
 
@@ -169,7 +170,10 @@ const waitEl = document.getElementById('wait')!;
 const topPanelEl = document.getElementById('topPanel') as HTMLImageElement;
 const mapButtonsEl = document.getElementById('mapButtons')!;
 const friendsBtn = document.getElementById('btnFriends') as HTMLImageElement;
-const targetsBtn = document.getElementById('btnTargets') as HTMLImageElement;
+const listImg = document.getElementById('friendList') as HTMLImageElement;
+const foesBar = document.getElementById('foesBar') as HTMLImageElement;
+const friendsBar = document.getElementById('friendsBar') as HTMLImageElement;
+const friendPanelEl = document.getElementById('friendPanel')!;
 const mapButtonsLeftEl = document.getElementById('mapButtonsLeft')!;
 const screenEl = document.getElementById('screen')!;
 const bottomPanelEl = document.getElementById('bottomPanel')!;
@@ -355,6 +359,7 @@ function draw(): void {
   const cx = tileX(here.lon, zoom);
   const cy = tileY(here.lat, zoom);
   const anchorY = aircraftY();
+  lastFrame = { cx, cy, anchorY };          // so a press can be read back
   const screenX = (tx: number): number => cssW / 2 + (tx - cx) * TILE;
   const screenY = (ty: number): number => anchorY + (ty - cy) * TILE;
 
@@ -411,6 +416,7 @@ function draw(): void {
   drawZoneLine(here, cx, cy, anchorY);
 
   drawTargets(here, cx, cy, anchorY);
+  drawTd(cx, cy, anchorY);
   drawFriend(cx, cy, anchorY);
   drawAircraft();
   drawCue(cx, cy, anchorY);
@@ -624,6 +630,36 @@ function cuePhase(cue: CueLive): { phase: CuePhase; image: HTMLImageElement } | 
  * The LAUNCH stretch has knobs of its own (--cueline-launch-*), which simply
  * follow the tracking ones until they are given values.
  */
+/**
+ * THE SOLID PART OF A CUE'S PICTURE — the badge at its middle, and nothing
+ * else — kept as a picture of its own so it can be laid back over the line.
+ *
+ * Made once for each of the three pictures and then held: every pixel that
+ * the artwork draws SOLID is kept as it is, and everything see-through is
+ * dropped. So what comes out is the badge's own shape, to the pixel, with
+ * none of the ring or the area around it.
+ */
+const cueBadges = new Map<HTMLImageElement, HTMLCanvasElement | null>();
+function cueBadge(img: HTMLImageElement): HTMLCanvasElement | null {
+  const had = cueBadges.get(img);
+  if (had !== undefined) return had;
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  if (!w || !h) return null;                   // not loaded yet: ask again
+  const cut = document.createElement('canvas');
+  cut.width = w;
+  cut.height = h;
+  const g = cut.getContext('2d', { willReadFrequently: true });
+  if (!g) { cueBadges.set(img, null); return null; }
+  g.drawImage(img, 0, 0);
+  const pic = g.getImageData(0, 0, w, h);
+  const d = pic.data;
+  for (let i = 3; i < d.length; i += 4) if (d[i]! < 200) d[i] = 0;
+  g.putImageData(pic, 0, 0);
+  cueBadges.set(img, cut);
+  return cut;
+}
+
 function drawCueLine(from: { x: number; y: number }, phase: 'tracking' | 'launch'): void {
   const scale = uiScale();
   const at = (name: string, fallbackNumber: number): number =>
@@ -680,7 +716,6 @@ function drawCue(cx: number, cy: number, anchorY: number): void {
   const scale = uiScale();
   const size = cssNumber('--cue-size', 420) * scale;
   const fade = Math.max(0, Math.min(1, cssNumber('--cue-opacity', 100) / 100));
-  const cap = cssNumber('--cueline-cap', 24) * scale;
 
   for (const cue of cues) {
     const now = cuePhase(cue);
@@ -699,20 +734,33 @@ function drawCue(cx: number, cy: number, anchorY: number): void {
     ctx.save();
     ctx.globalAlpha = fade;
     // The ring goes down first and the line over it, so the line reads from
-    // the middle of the cue; then the icon at the very middle is laid down
-    // once more, over the end of the line, so the line passes UNDER it there
-    // and nowhere else.
+    // the middle of the cue — except over the badge at the very middle, where
+    // the line is simply not drawn, so it comes out from under the badge and
+    // passes over everything else.
+    //
+    // The hole is cut out of the LINE rather than the badge being laid back
+    // over it. Laying it back over would paint that circle of the artwork
+    // twice, and the artwork there is see-through: painted on itself it comes
+    // out denser than the ring around it, which reads as a disc sitting under
+    // the middle of the picture.
     ctx.drawImage(now.image, p.x - size / 2, p.y - size / 2, size, size);
     if (now.phase === 'tracking' || now.phase === 'launch') {
       drawCueLine(p, now.phase);
-      if (cap > 0) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, cap, 0, Math.PI * 2);
-        ctx.clip();
-        ctx.drawImage(now.image, p.x - size / 2, p.y - size / 2, size, size);
-        ctx.restore();
-      }
+      // …and the badge goes back on top of it, in its own shape. Cutting a
+      // ROUND hole in the line instead, as this used to, can only ever be
+      // the wrong size: the badge is a rounded oblong and a different one in
+      // each of the three pictures, so a circle that clears its corners
+      // leaves the line stopping short of its sides — a gap between the line
+      // and the badge, which is what showed. Laid back over, the badge ends
+      // the line exactly where the badge's own edge is, whichever way the
+      // line comes in.
+      //
+      // Only the SOLID part of the picture is laid back, which is why this
+      // costs nothing: solid pixels drawn twice come out exactly as they
+      // were, while the see-through ring and area — which would darken if
+      // they were painted over themselves — are not touched.
+      const badge = cueBadge(now.image);
+      if (badge) ctx.drawImage(badge, p.x - size / 2, p.y - size / 2, size, size);
     }
     ctx.restore();
   }
@@ -944,6 +992,9 @@ function drawCompass(anchorY: number): void {
   ctx.save();
   ctx.beginPath();
   ctx.rect(-width, -height, width * 2, height * 2);
+  // The pen is lifted on to the circle before it is drawn — see the note in
+  // drawCue. Without it the hole has a wedge cut out of it.
+  ctx.moveTo(split, 0);
   ctx.arc(0, 0, split, 0, Math.PI * 2);
   ctx.clip('evenodd');
   ctx.rotate(turn);
@@ -987,7 +1038,8 @@ let zoneCentre: { x: number; y: number } | null = null;
 /** True once the launcher has been struck: the envelope and the line that
  *  reaches it are about a target that is no longer there, so both go. */
 function targetGone(f: MapFix): boolean {
-  return (f.targets ?? []).some((t) => t.kind === 'truck' && destroyed.has(t.id));
+  return (f.targets ?? []).some((t) =>
+    t.kind === 'truck' && t.strike !== false && destroyed.has(t.id));
 }
 
 function drawZone(f: MapFix, cx: number, cy: number, anchorY: number): void {
@@ -1043,7 +1095,7 @@ function drawZone(f: MapFix, cx: number, cy: number, anchorY: number): void {
  */
 function drawZoneLine(f: MapFix, cx: number, cy: number, anchorY: number): void {
   if (cssNumber('--zoneline-show', 1) === 0 || !zoneCentre) return;
-  const to = (f.targets ?? []).find((t) => t.kind === 'truck');
+  const to = (f.targets ?? []).find((t) => t.kind === 'truck' && t.strike !== false);
   if (!to) return;
 
   const scale = uiScale();
@@ -1141,15 +1193,85 @@ function markAt(x: number, y: number): string | null {
 
 canvas.addEventListener('click', (e) => {
   const box = canvas.getBoundingClientRect();
-  const hit = markAt(e.clientX - box.left, e.clientY - box.top);
-  if (!hit) return;
+  const x = e.clientX - box.left;
+  const y = e.clientY - box.top;
+  const hit = markAt(x, y);
+  if (!hit) { designate(x, y); return; }    // bare ground: put the box there
   if (picked.has(hit)) picked.delete(hit);
   else picked.add(hit);
   // A mark that is let go takes the camera with it, if it was the one being
   // held: nothing is slaved to a mark that is no longer chosen.
   if (!picked.has(hit) && slavedId === hit) setSlaved(null);
+  clearTd();                                // a mark was chosen instead
+  dressRowRings();                          // and every list says so too
   dirty = true;
 });
+
+/**
+ * ══ THE DESIGNATION BOX ═════════════════════════════════════════════════════
+ *
+ * Press anywhere on the map — bare ground, a waypoint, anything that is not a
+ * mark of its own — and TD_box.png is put on that spot: this is the place I
+ * mean. It is pinned to the GROUND, so it stays on the spot while the map
+ * moves under it, and it is drawn at a fixed size on the screen, as a sight
+ * is, rather than growing and shrinking with the zoom.
+ *
+ * What it is for is the Slave key: press that while the box is up and the
+ * belly camera is sent to hold that spot, exactly as it holds a mark. The box
+ * then stays for as long as the camera is on it.
+ *
+ * And if nothing is done with it, it goes: --td-hold seconds after it was put
+ * down it simply is not there any more, having got in the way of nothing.
+ */
+const tdArt = new Image();
+tdArt.src = './icons/TD_box.png';
+tdArt.addEventListener('load', () => { dirty = true; });
+
+let tdAt: { lat: number; lon: number } | null = null;
+let tdTimer = 0;
+
+/** A press on bare ground: the box goes there, and its clock starts. */
+function designate(x: number, y: number): void {
+  const at = unproject(x, y);
+  if (!at) return;
+  tdAt = at;
+  // Pressing somewhere else while the camera is held on the old spot lets
+  // that spot go: the camera follows the box, not the other way about.
+  if (slavedTd) setSlaved(null);
+  startTdClock();
+  dirty = true;
+}
+
+/** It waits --td-hold seconds to be used, and then it is gone. */
+function startTdClock(): void {
+  window.clearTimeout(tdTimer);
+  tdTimer = window.setTimeout(() => {
+    if (slavedTd) return;                   // in use: it stays
+    tdAt = null;
+    dirty = true;
+  }, Math.max(0, cssNumber('--td-hold', 7)) * 1000);
+}
+
+/** Take it away now — because something else was chosen, or the camera that
+ *  was holding it has been let go. */
+function clearTd(): void {
+  window.clearTimeout(tdTimer);
+  if (!tdAt) return;
+  tdAt = null;
+  dirty = true;
+}
+
+/** Every frame: the box on its spot, upright and at its own size. */
+function drawTd(cx: number, cy: number, anchorY: number): void {
+  if (!tdAt || !ready(tdArt)) return;
+  const w = cssNumber('--td-size', 92) * uiScale();
+  const h = (w * tdArt.naturalHeight) / tdArt.naturalWidth;
+  const p = project(tdAt.lat, tdAt.lon, cx, cy, anchorY);
+  ctx.save();
+  ctx.globalAlpha = Math.max(0, Math.min(1, cssNumber('--td-opacity', 100) / 100));
+  ctx.drawImage(tdArt, p.x - w / 2, p.y - h / 2, w, h);
+  ctx.restore();
+}
 
 /**
  * ══ SLAVING THE CAMERA TO A MARK ════════════════════════════════════════════
@@ -1176,15 +1298,32 @@ const PANEL_PLAIN = './icons/Bottom%20Panel.png';
 const PANEL_SLAVED = './icons/Bottom%20Panel_slave.png';
 new Image().src = PANEL_SLAVED;
 
+/** True while the camera is holding the designation box rather than a mark. */
+let slavedTd = false;
+
 function setSlaved(id: string | null): void {
   slavedId = id;
+  slavedTd = false;
   const mark = id ? (fix?.targets ?? []).find((t) => t.id === id) : null;
-  channel.postMessage({
-    kind: 'slave',
-    at: mark ? { lat: mark.lat, lon: mark.lon } : null,
-  } satisfies SlaveOrder);
-  const want = mark ? PANEL_SLAVED : PANEL_PLAIN;
+  tellSlave(mark ? { lat: mark.lat, lon: mark.lon } : null);
+}
+
+/** Hold the spot the designation box is on — the box then stays up for as
+ *  long as the camera is on it, and its clock is stopped. */
+function slaveToTd(): void {
+  if (!tdAt) return;
+  slavedId = null;
+  slavedTd = true;
+  window.clearTimeout(tdTimer);
+  tellSlave(tdAt);
+}
+
+/** Say what the camera is to hold, and dress the panel to match. */
+function tellSlave(at: { lat: number; lon: number } | null): void {
+  channel.postMessage({ kind: 'slave', at } satisfies SlaveOrder);
+  const want = at ? PANEL_SLAVED : PANEL_PLAIN;
   if (!bottomPanelImg.src.endsWith(want.slice(1))) bottomPanelImg.src = want;
+  dirty = true;
 }
 
 /**
@@ -1219,7 +1358,10 @@ function noteStruck(ids: string[] | undefined): void {
     if (destroyed.has(id)) continue;
     destroyed.add(id);
     picked.delete(id);
-    if (slavedId === id) setSlaved(null);   // the camera has nothing to hold
+    // THE CAMERA IS LEFT WHERE IT IS. If it was slaved to this mark it stays
+    // slaved: the burst stands on that very spot for the next few seconds,
+    // and letting go here would swing the camera off it at the one moment
+    // there is something to see. The Slave key lets go when she does.
     dirty = true;
   }
 }
@@ -1283,12 +1425,26 @@ function dressCamBoom(): void {
   }
 }
 
-slaveKey?.addEventListener('click', (e) => {
-  e.stopPropagation();
+/**
+ * THE SLAVE KEY, pressed either way: the key on the panel under the map, or
+ * b6 on the throttle in the other window. Both land here, so the two can
+ * never say different things about what the camera is holding.
+ */
+function pressSlaveKey(): void {
+  // Holding something already: let it go. A box that was being held goes
+  // with it — it was only ever there to say where to look.
+  if (slavedTd) { setSlaved(null); clearTd(); return; }
   if (slavedId) { setSlaved(null); return; }
-  // The first mark that is picked out and still on the map.
+  // THE BOX FIRST, when one is up: it is the thing just pressed, and taking
+  // it is what the press was for. Otherwise the first mark picked out.
+  if (tdAt) { slaveToTd(); return; }
   const chosen = (fix?.targets ?? []).find((t) => picked.has(t.id));
   if (chosen) setSlaved(chosen.id);
+}
+
+slaveKey?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  pressSlaveKey();
 });
 
 /** The look knobs for one kind of target: --target-* for the threats,
@@ -1349,7 +1505,10 @@ function drawTargets(f: MapFix, cx: number, cy: number, anchorY: number): void {
     // is drawn with the very same knobs: one picture simply takes the
     // other's place, same size, same spot, nothing moves. It cannot be
     // pressed or chosen any more.
-    const dead = destroyed.has(mark.id);
+    // A mark with `strike: false` has no struck face at all, so it is never
+    // dead however the release went: it simply stands there.
+    const strikeable = mark.strike !== false;
+    const dead = strikeable && destroyed.has(mark.id);
     // A mark that can be pressed has two faces, and which one it wears is
     // whether it has been pressed. The pressed one is sized on its own.
     const chosen = !dead && kind === 'truck' && picked.has(mark.id);
@@ -1362,7 +1521,7 @@ function drawTargets(f: MapFix, cx: number, cy: number, anchorY: number): void {
     const img = targetImage(face);
     if (kind === 'truck' && !dead) {
       targetImage(chosen ? mark.id : `${mark.id}_selected`);
-      targetImage(`${mark.id}_after`);
+      if (strikeable) targetImage(`${mark.id}_after`);
     }
     if (!ready(img)) continue;
     const height = (look.width * img.naturalHeight) / img.naturalWidth;
@@ -1374,6 +1533,32 @@ function drawTargets(f: MapFix, cx: number, cy: number, anchorY: number): void {
     if (kind === 'truck' && !dead) markBoxes.push({ id: mark.id, x, y, w: look.width, h: height });
   }
   ctx.restore();
+}
+
+/**
+ * THE LAST FRAME'S OWN NUMBERS, kept so that a press can be read back into
+ * degrees. Drawing turns a place on the ground into a place on the screen;
+ * a press has to go the other way, and it can only be answered against the
+ * frame that was actually on the glass when the finger came down.
+ */
+let lastFrame: { cx: number; cy: number; anchorY: number } | null = null;
+
+/** The way back from a place on the screen to the ground under it — project()
+ *  run backwards, rotation and all. */
+function unproject(x: number, y: number): { lat: number; lon: number } | null {
+  if (!lastFrame) return null;
+  const { cx, cy, anchorY } = lastFrame;
+  const dxs = x - cssW / 2;
+  const dys = y - anchorY;
+  // project() turns by -mapHeading, so coming back turns by +mapHeading.
+  const c = Math.cos(-mapHeading);
+  const sn = Math.sin(-mapHeading);
+  const dx = dxs * c + dys * sn;
+  const dy = -dxs * sn + dys * c;
+  return {
+    lat: latFromTileY(cy + dy / TILE, zoom),
+    lon: lonFromTileX(cx + dx / TILE, zoom),
+  };
 }
 
 /** Where a coordinate lands on the screen, rotation and all. */
@@ -1589,7 +1774,7 @@ function drawWaypoint(p: { x: number; y: number }, color: string, st: RouteStyle
  */
 const labelPlates = new Map<string, { img: HTMLCanvasElement; w: number; h: number }>();
 
-function labelPlate(text: string, st: RouteStyle): { img: HTMLCanvasElement; w: number; h: number } {
+function labelPlate(text: string, st: RouteStyle): { img: HTMLCanvasElement; w: number; h: number } | null {
   const font = `${st.labelWeight} ${st.labelText}px ${st.labelFont}`;
   const key = [text, font, st.labelH, st.labelPad, st.labelRadius, st.labelBg, st.labelColor, dpr].join('|');
   const had = labelPlates.get(key);
@@ -1599,6 +1784,14 @@ function labelPlate(text: string, st: RouteStyle): { img: HTMLCanvasElement; w: 
   const padX = st.labelH * st.labelPad;
   const w = ctx.measureText(text).width + padX * 2;
   const h = st.labelH;
+  // A PLATE OF NO SIZE IS NEVER MADE, AND NEVER KEPT. The window can be
+  // measured at nothing at all — while it is still opening, while it is
+  // hidden, in the moment a layout changes — and everything on the map is
+  // then scaled by nothing. A plate made in that moment is a canvas of zero
+  // width, which cannot be drawn: it would throw, and a throw in the middle
+  // of a frame takes the whole of the drawing down with it, camera and all.
+  // So nothing is made here until there is a size to make it at.
+  if (!(w >= 1) || !(h >= 1) || !(dpr > 0)) return null;
   const img = document.createElement('canvas');
   img.width = Math.ceil(w * dpr);
   img.height = Math.ceil(h * dpr);
@@ -1625,6 +1818,7 @@ function labelPlate(text: string, st: RouteStyle): { img: HTMLCanvasElement; w: 
 
 function drawWaypointLabel(text: string, p: { x: number; y: number }, st: RouteStyle): void {
   const plate = labelPlate(text, st);
+  if (!plate) return;                 // nothing to draw it at, this frame
   // The plate hangs from its TOP-LEFT corner: dx moves that corner right of
   // the ring's centre, dy moves it down from it. The plate then grows right
   // and down from there, as wide as the name needs.
@@ -1974,30 +2168,328 @@ window.addEventListener('keydown', (e) => {
 // exception is the friends button, which already knows its two states, so
 // clicking it shows the open panel's artwork and clicking again closes it.
 
-/** The friends button's two faces, and the targets bar's two. */
+/**
+ * ══ ONE TARGET, EVERY SCREEN ════════════════════════════════════════════════
+ *
+ * A target's NAME is its file's name: BN222_icon.png is BN222, and BN222 is
+ * what the map draws, what the targets screens list and what the foes list
+ * lists. Pressing it anywhere picks it out everywhere — on the map it puts on
+ * its chosen face, and in every list its row is ringed.
+ *
+ * The lists are PICTURES, so where each row lies in them was measured off the
+ * artwork, in the file's own pixels, and is scaled by however big the picture
+ * is drawn. Every list here has rows of one height at one spacing, so a row
+ * is `top + pitch * n` and the names are simply in order — add a name to a
+ * list and its row answers a press at once.
+ */
+interface ListRows {
+  /** The artwork, as it appears in the markup. */
+  src: string;
+  /** The file's own size, which everything below is measured in. */
+  w: number;
+  /** Where a row's box lies across the picture. */
+  x: number;
+  width: number;
+  /** The first row's top, how tall a row is, and how far to the next. */
+  top: number;
+  height: number;
+  pitch: number;
+  /** How round the corners are drawn, in the file's pixels. */
+  radius: number;
+  /** The rows themselves, top to bottom. */
+  names: string[];
+}
+
+/** The nine of Cobra 1, in the order every list puts them in. */
+const COBRA_1 = ['BN222', 'TR383', 'GE867', 'BN799', 'TR113', 'GE167', 'BN229', 'TR313', 'TR370'];
+
+const LIST_ROWS: ListRows[] = [
+  // The targets screen, in the five-way arrangement and in the bar.
+  { src: 'list_5_layout_all.png', w: 2284, x: 70, width: 2160,
+    top: 494, height: 292, pitch: 308, radius: 40, names: COBRA_1 },
+  { src: 'list_3_layout.png', w: 1540, x: 56, width: 1424,
+    top: 492, height: 292, pitch: 308, radius: 40, names: COBRA_1 },
+  // The foes list at full length, and the top half of the pair — where only
+  // the first four rows are drawn whole, so only those four are listed.
+  { src: 'Foes_FULL_list_open.png', w: 448, x: 16, width: 416,
+    top: 232, height: 416, pitch: 424, radius: 28, names: COBRA_1 },
+  { src: 'Friend and Foes_list_open.png', w: 448, x: 16, width: 416,
+    top: 232, height: 416, pitch: 424, radius: 28, names: COBRA_1.slice(0, 4) },
+];
+
+/** The target a file name stands for: BN222_icon -> BN222. */
+function targetName(id: string): string {
+  return id.replace(/_icon$/, '');
+}
+
+/** Which list, if any, a picture is — by the end of its own file name. */
+function listRowsFor(img: HTMLImageElement): ListRows | undefined {
+  const src = decodeURIComponent(img.getAttribute('src') ?? '');
+  return LIST_ROWS.find((l) => src.endsWith(l.src));
+}
+
+/**
+ * THE WHITE RING ROUND A CHOSEN ROW.
+ *
+ * Every ring is MADE AFRESH each time, and the old ones are taken away
+ * first. It is tempting to keep them against the picture they belong to and
+ * move them about, but a picture does not stay the same picture: the panel
+ * swaps one list for another in place, and a ring kept against that element
+ * would be left standing over a list that is no longer there — white boxes
+ * on the bare map. Made afresh, a ring can only ever exist where a list that
+ * is on screen says that row is.
+ */
+function dressRowRings(): void {
+  for (const old of document.querySelectorAll('.rowRing')) old.remove();
+  const chosen = new Set([...picked].map(targetName));
+  if (!chosen.size) return;
+  for (const img of document.querySelectorAll<HTMLImageElement>('img')) {
+    const list = listRowsFor(img);
+    if (!list) continue;
+    const parent = img.parentElement;
+    if (!parent) continue;
+    // A SHUT LIST HAS NO ROWS TO RING. It may still be in the page, keeping
+    // its place and its size so that everything round it can be measured, so
+    // its box alone does not say whether it can be seen; asked all three
+    // ways it does.
+    if (img.offsetParent === null) continue;
+    if (img.classList.contains('is-shut')) continue;
+    if (getComputedStyle(img).visibility === 'hidden') continue;
+    const box = img.getBoundingClientRect();
+    if (!box.width) continue;
+    const frame = parent.getBoundingClientRect();
+    const s = box.width / list.w;            // drawn pixels per file pixel
+    list.names.forEach((name, i) => {
+      if (!chosen.has(name)) return;
+      const ring = document.createElement('div');
+      ring.className = 'rowRing';
+      ring.style.left = `${(box.left - frame.left + list.x * s).toFixed(2)}px`;
+      ring.style.top = `${(box.top - frame.top + (list.top + list.pitch * i) * s).toFixed(2)}px`;
+      ring.style.width = `${(list.width * s).toFixed(2)}px`;
+      ring.style.height = `${(list.height * s).toFixed(2)}px`;
+      ring.style.borderRadius = `${(list.radius * s).toFixed(2)}px`;
+      parent.appendChild(ring);
+    });
+  }
+}
+
+/** A press on a list: the row it landed on is picked out, or let go. */
+function pressListRow(e: MouseEvent): boolean {
+  const img = e.currentTarget as HTMLImageElement;
+  const list = listRowsFor(img);
+  if (!list) return false;
+  const box = img.getBoundingClientRect();
+  if (!box.width) return false;
+  const s = box.width / list.w;
+  const x = (e.clientX - box.left) / s;
+  const y = (e.clientY - box.top) / s;
+  if (x < list.x || x > list.x + list.width) return false;
+  const n = Math.floor((y - list.top) / list.pitch);
+  if (n < 0 || n >= list.names.length) return false;
+  if (y - list.top - list.pitch * n > list.height) return false;   // in the gap
+  const id = `${list.names[n]}_icon`;
+  if (picked.has(id)) picked.delete(id);
+  else picked.add(id);
+  dressRowRings();
+  dirty = true;                       // the map's own mark changes face too
+  return true;
+}
+
+/** Every list picture on screen answers a press, however it got there. */
+function wireListPresses(): void {
+  for (const img of document.querySelectorAll<HTMLImageElement>('img')) {
+    if (!listRowsFor(img) || img.dataset.rowsWired) continue;
+    img.dataset.rowsWired = '1';
+    img.style.pointerEvents = 'auto';
+    img.style.cursor = 'pointer';
+    img.addEventListener('click', pressListRow);
+  }
+}
+
+/**
+ * ══ THE FOES AND THE FRIENDS ════════════════════════════════════════════════
+ *
+ * The button at the top left drops BOTH LISTS at once — the foes above, the
+ * friends below — and each of them has its own bar as its heading. Pressing a
+ * bar shuts that list; pressing it again opens it. There are four ways the
+ * panel can stand, and a picture for each, so nothing is ever stretched or
+ * cut to fit:
+ *
+ *   both open     Friend and Foes_list_open.png — one picture, foes over
+ *                 friends, with both bars drawn into it.
+ *   foes shut     Foes_list_close.png above, and the friends at full length
+ *                 under it: Friend_FULL_list_open.png.
+ *   friends shut  the foes at full length, Foes_FULL_list_open.png, and the
+ *                 friends' bar BELOW them: Friend_list_close.png.
+ *   both shut     the two bars alone, in that order.
+ *
+ * WHICH BAR WAS PRESSED is worked out from where in the picture the press
+ * landed. The bars were measured off the files — a bar is the coloured band
+ * at the top of its list — and are given as shares of the picture's height,
+ * so they hold at any size the panel is drawn.
+ */
 const FRIENDS_CLOSED = './icons/Friends%20and%20targets_Close.png';
 const FRIENDS_OPEN = './icons/Friends%20and%20targets_Open.png';
-const TARGETS_CLOSED = './icons/Targets_Close.png';
-const TARGETS_OPEN = './icons/Targets_list_open.png';
+/**
+ * THE THREE LISTS, and the SLOT each leaves for a heading.
+ *
+ * The lists are drawn without their headings: each has an empty place where
+ * its bar belongs, and the bar is laid into it here. So a heading is one
+ * picture — Foes_list_open.png, Friend_list_open.png — whether its list is
+ * open or shut, and it never has to be cut out of a list or drawn twice.
+ *
+ * The slots were measured off the artwork: every list is 448 across and its
+ * bar 408, so a bar sits 20 in from either side; the slot is 176 tall. They
+ * are kept as SHARES of the picture, so they hold at any size it is drawn.
+ */
+const BAR_X = 20;          // in from the list's left edge, in file pixels
+const BAR_W = 408;         // and how wide it is drawn there
+const BAR_H = 176;         // the slot's own height
+const LIST_W = 448;        // every list is this wide
+const SLOT_Y = 20;         // the first slot starts this far down a list
+const LIST_BOTH = { src: './icons/Friend%20and%20Foes_list_open.png' };
+const LIST_FRIENDS_FULL = { src: './icons/Friend_FULL_list_open.png' };
+const LIST_FOES_FULL = { src: './icons/Foes_FULL_list_open.png' };
 
-let friendsOpen = false;
-let targetsOpen = false;
+/**
+ * WHERE THE SLOTS ARE — FOUND IN THE PICTURE, NOT WRITTEN DOWN HERE.
+ *
+ * A list leaves an empty slot wherever a heading belongs, and the headings
+ * are laid into those slots. Writing those places down as numbers works
+ * right up until the list is drawn again with one more row in it — and then
+ * every heading below that row is out of place, which is exactly what
+ * happened.
+ *
+ * So the picture is asked instead. It is read once: each row of it is tested
+ * for being nothing but the panel it is drawn on, and a run of empty rows
+ * tall enough to hold a heading is a slot. The first slot is known to begin
+ * SLOT_Y down — that is the margin the design gives it — so what the reading
+ * says about THAT slot tells us how much of an empty run is air above the
+ * heading, and the same is taken off every slot below it.
+ *
+ * Draw a list as long or as short as you like; the headings follow.
+ */
+const listSlots = new Map<string, number[]>();
+function slotsIn(img: HTMLImageElement): number[] {
+  const key = img.getAttribute('src') ?? '';
+  const had = listSlots.get(key);
+  if (had) return had;
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  if (!w || !h) return [];                     // not loaded yet: ask again
+  const cut = document.createElement('canvas');
+  cut.width = w;
+  cut.height = h;
+  const g = cut.getContext('2d', { willReadFrequently: true });
+  if (!g) return [];
+  g.drawImage(img, 0, 0);
+  const d = g.getImageData(0, 0, w, h).data;
+  const far = (x: number, y: number, bg: number[]): number => {
+    const i = (y * w + x) * 4;
+    return Math.abs(d[i]! - bg[0]!) + Math.abs(d[i + 1]! - bg[1]!) + Math.abs(d[i + 2]! - bg[2]!);
+  };
+  const o = ((8 * w) + (w >> 1)) * 4;
+  const bg = [d[o]!, d[o + 1]!, d[o + 2]!];    // the panel, read near the top
+  const bands: number[] = [];
+  let from: number | null = null;
+  for (let y = 0; y < h; y++) {
+    let plain = true;
+    for (let x = 8; x < w - 8; x += 6) {
+      if (far(x, y, bg) > 14) { plain = false; break; }
+    }
+    if (plain) { if (from === null) from = y; continue; }
+    if (from !== null && y - from >= BAR_H - 20) bands.push(from);
+    from = null;
+  }
+  if (from !== null && h - from >= BAR_H - 20) bands.push(from);
+  // The first band says how much of a band is air; the rest are read the same.
+  const trim = bands.length ? bands[0]! - SLOT_Y : 0;
+  const tops = bands.map((b) => b - trim);
+  listSlots.set(key, tops);
+  return tops;
+}
+/** The two faces of each heading: pressed open, and pressed shut. */
+const FOES_BAR = { open: './icons/Foes_list_open.png', shut: './icons/Foes_list_close.png' };
+const FRIENDS_BAR = { open: './icons/Friend_list_open.png', shut: './icons/Friend_list_close.png' };
 
-/** Open or close the friends panel: the button changes face, and the list —
- *  with the targets bar joined to its bottom edge — hangs under it. */
+let friendsOpen = false;        // the panel itself
+let foesListOpen = true;        // and the two lists within it
+let friendListOpen = true;
+
+/** Open or close the panel. It always opens showing BOTH lists. */
 function setFriendsOpen(open: boolean): void {
   friendsOpen = open;
   friendsBtn.src = open ? FRIENDS_OPEN : FRIENDS_CLOSED;
-  friendsBtn.alt = open ? 'Friends and targets (open)' : 'Friends and targets';
+  friendsBtn.alt = open ? 'Foes and friends (open)' : 'Foes and friends';
   mapButtonsLeftEl.classList.toggle('is-friendsOpen', open);
-  if (open) fitButtons(); // nothing hidden can be measured
+  if (open) { foesListOpen = true; friendListOpen = true; }
+  dressLists();
 }
 
-/** The targets bar swaps for its own list, in place, under the friend list. */
-function setTargetsOpen(open: boolean): void {
-  targetsOpen = open;
-  targetsBtn.src = open ? TARGETS_OPEN : TARGETS_CLOSED;
-  targetsBtn.alt = open ? 'Targets (open)' : 'Targets';
+/** Put the panel into whichever of its four ways it now stands in. */
+function dressLists(): void {
+  const both = foesListOpen && friendListOpen;
+  const neither = !foesListOpen && !friendListOpen;
+  // The shut bars: the foes' above whatever is there, the friends' below it.
+  foesBar.classList.toggle('is-shut', foesListOpen);
+  friendsBar.classList.toggle('is-shut', friendListOpen);
+  listImg.classList.toggle('is-shut', neither);
+  if (!neither) {
+    const want = both ? LIST_BOTH.src
+      : friendListOpen ? LIST_FRIENDS_FULL.src : LIST_FOES_FULL.src;
+    if (!listImg.src.endsWith(want.slice(1))) listImg.src = want;
+    listImg.alt = both ? 'Foes and friends' : friendListOpen ? 'Friends' : 'Foes';
+  }
+  // Each heading is ONE button: only the picture on it changes.
+  setFace(foesBar, foesListOpen ? FOES_BAR.open : FOES_BAR.shut);
+  setFace(friendsBar, friendListOpen ? FRIENDS_BAR.open : FRIENDS_BAR.shut);
+  if (friendsOpen) fitButtons();   // nothing hidden can be measured
+  placeListBars();
+  dressRowRings();                 // a list that has gone takes its rings
+}
+
+function setFace(img: HTMLImageElement, want: string): void {
+  if (!img.src.endsWith(want.slice(1))) img.src = want;
+}
+
+/**
+ * WHERE THE TWO HEADINGS GO, and why none of it is left to the page's own
+ * stacking.
+ *
+ * Everything here is worked out in the LIST'S OWN PIXELS and then scaled by
+ * however big the list is drawn — so a heading lands on the same spot of the
+ * artwork at any window size. The foes' heading never moves: it is at the
+ * top, in the first slot, whether its list is open or shut. The list itself
+ * is slid DOWN to make room when the foes are shut, which is what keeps that
+ * heading still while everything under it collapses.
+ */
+function placeListBars(): void {
+  const box = listImg.getBoundingClientRect();
+  const panel = friendPanelEl.getBoundingClientRect();
+  if (!box.width) return;
+  const s = box.width / LIST_W;              // drawn pixels per file pixel
+  const gap = cssNumber('--panel-gap', 8) * uiScale();
+  // The foes' heading holds the first slot. When its list is shut, whatever
+  // is under it starts below the heading instead of at the top.
+  const drop = foesListOpen ? 0 : (SLOT_Y + BAR_H) * s + gap;
+  listImg.style.transform = drop ? `translateY(${drop.toFixed(2)}px)` : '';
+  const left = box.left - panel.left + BAR_X * s;
+  const top0 = box.top - panel.top - drop;   // the list's place before the slide
+  const slots = slotsIn(listImg);            // read off the picture itself
+  const foesTop = top0 + (slots[0] ?? SLOT_Y) * s;
+  // The friends' heading: in its own slot in the middle of the pair, in the
+  // first slot of the friends' own list when the foes are shut, and below
+  // the whole picture when the friends themselves are shut.
+  let friendsTop: number;
+  if (foesListOpen && friendListOpen) friendsTop = top0 + (slots[1] ?? 0) * s;
+  else if (friendListOpen) friendsTop = top0 + drop + (slots[0] ?? SLOT_Y) * s;
+  else if (foesListOpen) friendsTop = top0 + box.height + gap;
+  else friendsTop = foesTop + (BAR_H * s) + gap;
+  for (const [bar, y] of [[foesBar, foesTop], [friendsBar, friendsTop]] as const) {
+    bar.style.left = `${left.toFixed(2)}px`;
+    bar.style.top = `${y.toFixed(2)}px`;
+    bar.style.width = `${(BAR_W * s).toFixed(2)}px`;
+  }
 }
 
 /**
@@ -2319,13 +2811,21 @@ const PANE_ORDER: PaneKind[] = ['ew', 'weapon', 'radar', 'targets', 'cam'];
 
 /** What each screen is called, which button it wears, and what it is made of.
  *  `open` is the button's other face, worn while its menu is down. */
-const PANE_KINDS: Record<PaneKind, { button: string; open: string; body: string; tall?: string }> = {
+const PANE_KINDS: Record<PaneKind, {
+  button: string; open: string; body: string;
+  /** The face for the TALL slot in the five-way arrangement. */
+  tall?: string;
+  /** The face for the BAR beside the map, whose screens are drawn at their
+   *  own shapes — the 3_layout files. A screen with none of its own simply
+   *  wears its usual face there. */
+  bar?: string;
+}> = {
   ew: {
     button: './icons/EW_button.png',
     open: './icons/EW_button_open.png',
-    // Nothing yet — the EW screen is still to be drawn. It keeps its place in
-    // the menu so it can be chosen the moment the artwork arrives.
-    body: '',
+    // Two layers, put together as they are drawn: what stays and what turns
+    // with north — see drawEw.
+    body: '<canvas class="ewView"></canvas>',
   },
   weapon: {
     button: './icons/Weapon_button.png',
@@ -2343,16 +2843,22 @@ const PANE_KINDS: Record<PaneKind, { button: string; open: string; body: string;
     // Her file is spelled "botton"; the other spelling is tried as well so
     // that renaming it later needs no change here.
     open: './icons/Targets_botton_open.png',
-    body: '<img src="./icons/list_5_layout.png" alt="Targets">',
-    // The list is the one screen with a taller face as well, for when it
-    // takes the whole of the right-hand column.
-    tall: '<img class="is-tallFace" src="./icons/list_5_layout_all.png" alt="Targets">',
+    // THE LIST IS ALWAYS THE WHOLE LIST. There is one file, the long one,
+    // and whatever slot it is put in it is shown from the TOP down: what
+    // fits is what shows, and the rest is scrolled to. That is why it is
+    // wrapped — the wrapper is what scrolls, so the button in the corner
+    // stays where it is while the list moves under it.
+    body: '<div class="listScroll"><img src="./icons/list_5_layout_all.png" alt="Targets"></div>',
+    tall: '<div class="listScroll"><img class="is-tallFace" src="./icons/list_5_layout_all.png" alt="Targets"></div>',
+    bar: '<div class="listScroll"><img src="./icons/list_3_layout.png" alt="Targets"></div>',
   },
   cam: {
     button: './icons/Cam_button.png',
     open: './icons/Cam_button_open.png',
     body: '<canvas class="camView"></canvas>'
       + '<img class="camOverlay" src="./icons/cam_5_layout.png" alt="Camera">',
+    bar: '<canvas class="camView"></canvas>'
+      + '<img class="camOverlay" src="./icons/cam_3_layout.png" alt="Camera">',
   },
 };
 
@@ -2499,6 +3005,13 @@ function columnIsTall(): boolean {
 function isTallPane(pane: HTMLElement): boolean {
   return !!tallPane && pane === tallPane && columnIsTall();
 }
+
+/** The two screens of the BAR beside the map — the arrangement with one tall
+ *  screen above a square one. They are slots like all the others: the button
+ *  in the corner chooses what is on them. */
+function isBarPane(pane: HTMLElement): boolean {
+  return pane.parentElement?.id === 'sideCol';
+}
 function updateTallColumn(): void {
   if (!rightCol || !tallPane) return;
   rightCol.classList.toggle('is-tall', columnIsTall());
@@ -2513,7 +3026,11 @@ function setPaneKind(pane: HTMLElement, kind: PaneKind): void {
   if (kind === 'cam') pane.classList.add('camPane');
   if (pane === tallPane) updateTallColumn();     // before the face is chosen
   const art = PANE_KINDS[kind];
-  pane.innerHTML = (isTallPane(pane) && art.tall) ? art.tall : art.body;
+  // Which of its faces: the taller one in the tall slot, the bar's own where
+  // the screen has one drawn at that shape, and otherwise its usual face.
+  pane.innerHTML = (isTallPane(pane) && art.tall) ? art.tall
+    : (isBarPane(pane) && art.bar) ? art.bar
+      : art.body;
 
   // The camera's markings may not be in the folder: without them the picture
   // simply shows on its own rather than leaving a broken image behind.
@@ -2525,6 +3042,7 @@ function setPaneKind(pane: HTMLElement, kind: PaneKind): void {
   // markings at once, rather than waiting for the zoom to change again.
   if (kind === 'cam') dressCamOverlays();
   if (kind === 'weapon') buildWeaponPane(pane);
+  if (kind === 'targets') { wireListPresses(); dressRowRings(); }
 
   const btn = document.createElement('button');
   btn.type = 'button';
@@ -2544,12 +3062,9 @@ function setPaneKind(pane: HTMLElement, kind: PaneKind): void {
 
   const menu = document.createElement('div');
   menu.className = 'paneMenu';
-  // The menu hangs from the foot of the button: both pictures are the same
-  // width, so it lines up with it by construction.
-  const buttonH = (cssNumber('--pane-button-w', 34.7) * 225) / 709;   // in pane width
-  const pillFoot = cssNumber('--pane-button-y', 1.3) + buttonH * (202 / 225);
-  menu.style.top = `${pillFoot + cssNumber('--pane-menu-gap', 0.6)
-    - (MENU_PANEL.top * cssNumber('--pane-button-w', 34.7) * 1103) / 709}%`;
+  // Where it hangs is worked out in the stylesheet, from the button's own
+  // size and the two pictures' shapes — see .paneMenu in map.html. Nothing
+  // is measured here, so it stays right through any resize.
   const face2 = document.createElement('img');
   face2.src = './icons/Drop-down.png';
   face2.alt = '';
@@ -2599,10 +3114,50 @@ updateTallColumn();
 document.addEventListener('click', () => closeOtherMenus());
 window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeOtherMenus(); });
 
+/**
+ * ══ THE DATA CONTROL, AND ITS THREE MODES ═══════════════════════════════════
+ *
+ * One picture with three faces — data_mode1, 2 and 3 — and the top cell of it,
+ * the one with the two arrows, is the key: press it and the next face comes
+ * up, press it on the last and the first is back.
+ *
+ * The three are the same size to the pixel and are drawn in the same box, so
+ * nothing moves as they change: it reads as a button being pressed rather
+ * than as one picture swapped for another. Only the TOP CELL answers — a
+ * press lower down, on the readings themselves, does nothing — and how far
+ * down it reaches is --btn-datamode-key.
+ */
+const DATA_MODES = [
+  './icons/data_mode1.png',
+  './icons/data_mode2.png',
+  './icons/data_mode3.png',
+];
+let dataMode = 0;
+const dataModeBtn = document.getElementById('btnDataMode') as HTMLImageElement | null;
+for (const src of DATA_MODES) new Image().src = src;   // no blink on the first press
+
+dataModeBtn?.addEventListener('click', (e) => {
+  const box = dataModeBtn.getBoundingClientRect();
+  if (!box.height) return;
+  const share = (e.clientY - box.top) / box.height;
+  const key = cssNumber('--btn-datamode-key', 25) / 100;
+  if (share > key) return;                   // not on the key: nothing happens
+  dataMode = (dataMode + 1) % DATA_MODES.length;
+  dataModeBtn.src = DATA_MODES[dataMode]!;
+});
+
 friendsBtn.addEventListener('click', () => setFriendsOpen(!friendsOpen));
-targetsBtn.addEventListener('click', () => setTargetsOpen(!targetsOpen));
-// Both open faces are fetched up front, so the first click swaps without a blink.
-for (const src of [FRIENDS_OPEN, TARGETS_OPEN]) new Image().src = src;
+// A heading is a switch: it shuts its own list, and opens it again.
+foesBar.addEventListener('click', () => { foesListOpen = !foesListOpen; dressLists(); });
+friendsBar.addEventListener('click', () => { friendListOpen = !friendListOpen; dressLists(); });
+// Every face the panel can wear is fetched up front, so a press swaps the
+// picture without a blink.
+for (const src of [
+  FRIENDS_OPEN, LIST_BOTH.src, LIST_FRIENDS_FULL.src, LIST_FOES_FULL.src,
+  FOES_BAR.open, FOES_BAR.shut, FRIENDS_BAR.open, FRIENDS_BAR.shut,
+]) {
+  new Image().src = src;
+}
 
 /**
  * Two things are done to every button as it loads.
@@ -2969,6 +3524,9 @@ function fitButtons(): void {
   }
   placeIconNorth();
   placeClock();
+  placeListBars();
+  wireListPresses();
+  dressRowRings();
 }
 
 applyScaleToCss(uiScale());
@@ -3084,6 +3642,13 @@ channel.onmessage = (e: MessageEvent<MapMessage>) => {
     fireWeapon();
     return;
   }
+  // A camera key on the throttle: b6 is the Slave key, b7 puts the camera
+  // back to resting and lets any mark go.
+  if ('kind' in message && message.kind === 'camkey') {
+    if (message.what === 'slave') pressSlaveKey();
+    else if (slavedId) setSlaved(null);
+    return;
+  }
   const next = message as MapFix;
   if (typeof next.lat !== 'number') return;
   if (!fix) waitEl.classList.add('is-hidden'); // the first fix: show the map
@@ -3127,9 +3692,20 @@ function frame(): void {
       dirty = true;
     }
   }
-  if (dirty) { dirty = false; draw(); }
-  drawRadar(performance.now());
-  drawCam();
+  // EACH PIECE OF THE FRAME STANDS ON ITS OWN, and the next frame is asked
+  // for whatever happens. One screen that cannot draw itself — a picture
+  // that is not there yet, a window measured at nothing — used to throw out
+  // of the middle of the frame and take everything after it with it: the
+  // camera, the radar, and the request for the next frame, so the map simply
+  // stopped. Now a bad frame costs that one screen, that once.
+  try {
+    if (dirty) { dirty = false; draw(); }
+  } catch (err) {
+    console.error('map: draw failed this frame', err);
+  }
+  try { drawRadar(performance.now()); } catch (err) { console.error('map: radar', err); }
+  try { drawEw(); } catch (err) { console.error('map: EW', err); }
+  try { drawCam(); } catch (err) { console.error('map: camera', err); }
   requestAnimationFrame(frame);
 }
 
@@ -3331,6 +3907,208 @@ function drawRadar(now: number): void {
     // Design px on a screen `basis` wide, scaled to the screen in front of us.
     const k = w / basis;
     for (const t of radarTraces) if (t.alpha > 0) drawTrace(g, t, w, h, k);
+  }
+}
+
+// -- the EW screen -----------------------------------------------------------
+/**
+ * ══ THE EW SCREEN ═══════════════════════════════════════════════════════════
+ *
+ * Two pictures, drawn one over the other:
+ *
+ *   EW.png        everything that stays where it is — the panel, the two
+ *                 range rings with their 5 and 10, and the aircraft.
+ *   EW_move.png   everything that turns with north — the bearing marks
+ *                 (N W S E and 03 06 12 15 21 24 30 33) and the white ring
+ *                 round the aircraft with its own N on it.
+ *
+ * THE TURNING LAYER IS NOT CUT. It carries two roses, and they were drawn
+ * facing different ways — the big one has its N out to the right, the little
+ * one has its N up at EW_MARK_AT — so each is carried round by its own
+ * amount and both come to rest with N on true north. The two are taken
+ * through ring-shaped holes, and those holes fall in the EMPTY space between
+ * them: there is nothing on that layer between the little ring and the
+ * bearing marks, and nothing outside the marks but the panel's own edge. No
+ * line of the artwork is crossed.
+ *
+ * AND ITS BACKGROUND IS LIFTED OFF. The layer was exported on the panel
+ * rather than on nothing, so drawn as it is it would hide the range rings
+ * underneath. It is read once into a picture of its own where each pixel is
+ * made as see-through as it is dark: the flat panel disappears, the white
+ * marks stay exactly as they were drawn, and what is under them shows.
+ *
+ * Everything below is in the FILE'S OWN PIXELS, measured off the artwork
+ * (2284 square), and scaled to whatever size the screen is drawn at.
+ */
+const EW_FILE = 2284;          // both layers are this square
+const EW_CX = 1144;            // the rings' own middle in them
+const EW_CY = 1202;
+/** The bearing marks: the band they live in, and which way they were drawn. */
+const EW_RING_IN = 700;
+const EW_RING_OUT = 1050;
+const EW_RING_AT = 90;         // their N is drawn out to the RIGHT
+/** The little ring round the aircraft, and where ITS N was drawn. */
+const EW_MARK_IN = 100;
+const EW_MARK_OUT = 260;
+const EW_MARK_AT = 31;
+/** The brightness a pixel of the turning layer needs before it counts as a
+ *  mark rather than as the panel it was drawn on. */
+const EW_KEY_LOW = 45;
+const EW_KEY_HIGH = 110;
+
+const ewBase = new Image();
+ewBase.src = './icons/EW.png';
+const ewMove = new Image();
+ewMove.src = './icons/EW_move.png';
+/** The turning layer with its background lifted off, made once. */
+let ewMoveCut: HTMLCanvasElement | null = null;
+
+function ewReady(): boolean {
+  if (!ready(ewBase) || !ready(ewMove)) return false;
+  if (ewMoveCut) return true;
+  const cut = document.createElement('canvas');
+  cut.width = ewMove.naturalWidth;
+  cut.height = ewMove.naturalHeight;
+  const g = cut.getContext('2d', { willReadFrequently: true });
+  if (!g) return false;
+  g.drawImage(ewMove, 0, 0);
+  const pic = g.getImageData(0, 0, cut.width, cut.height);
+  const d = pic.data;
+  const span = Math.max(1, EW_KEY_HIGH - EW_KEY_LOW);
+  for (let i = 0; i < d.length; i += 4) {
+    const v = Math.max(d[i]!, d[i + 1]!, d[i + 2]!);
+    const t = Math.max(0, Math.min(1, (v - EW_KEY_LOW) / span));
+    d[i + 3] = Math.round(d[i + 3]! * t);
+  }
+  g.putImageData(pic, 0, 0);
+  ewMoveCut = cut;
+  return true;
+}
+
+/** One rose of the turning layer: taken through a ring-shaped hole in the
+ *  empty space round it, and carried to where its N belongs. */
+function ewRose(
+  g: CanvasRenderingContext2D, k: number, r0: number, r1: number, turn: number,
+): void {
+  if (!ewMoveCut) return;
+  const cx = EW_CX * k;
+  const cy = EW_CY * k;
+  g.save();
+  g.beginPath();
+  // Each circle is its own subpath: `arc` would otherwise draw a line from
+  // wherever the pen is to where the arc begins, and cut a wedge out of the
+  // hole. `moveTo` lifts the pen on to the circle first.
+  g.moveTo(cx + r1 * k, cy);
+  g.arc(cx, cy, r1 * k, 0, Math.PI * 2);
+  g.moveTo(cx + r0 * k, cy);
+  g.arc(cx, cy, r0 * k, 0, Math.PI * 2, true);
+  g.clip('evenodd');
+  g.translate(cx, cy);
+  g.rotate(turn);
+  g.translate(-cx, -cy);
+  g.drawImage(ewMoveCut, 0, 0, EW_FILE * k, EW_FILE * k);
+  g.restore();
+}
+
+/**
+ * ══ THE THREATS ON THE EW SCREEN ════════════════════════════════════════════
+ *
+ * The same threat the map shows, shown here the way an EW screen shows one:
+ * not on its spot of ground but at its BEARING AND RANGE from the aircraft.
+ * The aircraft is the middle of this screen and its nose is always up, so a
+ * threat dead ahead sits at the top and one off the left wing sits to the
+ * left, however the aircraft is pointing.
+ *
+ * It wears whichever of the three faces the threat is wearing at that moment
+ * — searching, tracking, launch — and it is the very same reckoning that
+ * drives the map, so the two can never fall out of step.
+ *
+ * The two range rings are the scale: the outer one is --ew-range away and
+ * the inner one half of that, which is what the artwork says (5 and 10).
+ * Anything further off is held on the outer ring rather than drawn off the
+ * screen, so a threat that is still a long way out is seen coming.
+ */
+const EW_RING_R = 824;         // the outer ring, in the artwork's own pixels
+const EW_THREAT: Record<CuePhase, string> = {
+  searching: './icons/SA_8%20searching.png',
+  tracking: './icons/SA_8%20tracking.png',
+  launch: './icons/SA_8_lanch.png',
+};
+const ewThreatArt = new Map<string, HTMLImageElement>();
+function ewThreatImage(phase: CuePhase): HTMLImageElement {
+  const src = EW_THREAT[phase];
+  let img = ewThreatArt.get(src);
+  if (!img) {
+    img = new Image();
+    img.src = src;
+    ewThreatArt.set(src, img);
+  }
+  return img;
+}
+
+/** Where a threat lies from the aircraft: how far round from the nose, and
+ *  how far off, in nautical miles. */
+function ewBearing(cue: { lat: number; lon: number }): { turn: number; nm: number } | null {
+  if (!fix) return null;
+  const kx = Math.cos((fix.lat * Math.PI) / 180);     // lon degrees are shorter up here
+  const dLat = cue.lat - fix.lat;
+  const dLon = (cue.lon - fix.lon) * kx;
+  const metres = Math.hypot(dLat, dLon) * 111_320;
+  // From north, then taken round to the screen: the nose is up, so the whole
+  // picture is turned by the heading the map is eased to.
+  const fromNorth = Math.atan2(dLon, dLat);
+  return { turn: fromNorth - mapHeading, nm: metres / 1852 };
+}
+
+/** The threats, laid on one EW screen. */
+function drawEwThreats(g: CanvasRenderingContext2D, k: number): void {
+  if (!cues.length) return;
+  const outer = Math.max(0.1, cssNumber('--ew-range', 10));
+  const size = cssNumber('--ew-threat-size', 300) * k;
+  const cx = EW_CX * k;
+  const cy = EW_CY * k;
+  for (const cue of cues) {
+    const now = cuePhase(cue);                 // the very same reckoning as the map
+    if (!now) continue;
+    const art = ewThreatImage(now.phase);
+    if (!ready(art)) continue;
+    const where = ewBearing(cue);
+    if (!where) continue;
+    // Held on the outer ring when it is further off than the screen reaches.
+    const r = Math.min(1, where.nm / outer) * EW_RING_R * k;
+    const x = cx + Math.sin(where.turn) * r;
+    const y = cy - Math.cos(where.turn) * r;
+    // Upright, always: the screen turns, a threat's own badge does not.
+    g.drawImage(art, x - size / 2, y - size / 2, size, size);
+  }
+}
+
+/** Every EW screen on show, repainted. */
+function drawEw(): void {
+  const views = Array.from(document.querySelectorAll<HTMLCanvasElement>('.ewView'))
+    .filter((c) => c.clientWidth > 0 && c.clientHeight > 0);
+  if (!views.length || !ewReady()) return;
+  const dprNow = Math.min(window.devicePixelRatio || 1, 2);
+  // True north lies at -mapHeading on a track-up screen, and each rose was
+  // drawn with its own N somewhere else already.
+  const ring = -mapHeading - (EW_RING_AT * Math.PI) / 180;
+  const mark = -mapHeading - (EW_MARK_AT * Math.PI) / 180;
+  for (const view of views) {
+    const w = view.clientWidth;
+    const h = view.clientHeight;
+    if (view.width !== Math.round(w * dprNow) || view.height !== Math.round(h * dprNow)) {
+      view.width = Math.round(w * dprNow);
+      view.height = Math.round(h * dprNow);
+    }
+    const g = view.getContext('2d');
+    if (!g) continue;
+    g.setTransform(dprNow, 0, 0, dprNow, 0, 0);
+    g.clearRect(0, 0, w, h);
+    const k = w / EW_FILE;                 // drawn pixels per file pixel
+    g.drawImage(ewBase, 0, 0, w, w);       // everything that stays
+    ewRose(g, k, EW_RING_IN, EW_RING_OUT, ring);
+    ewRose(g, k, EW_MARK_IN, EW_MARK_OUT, mark);
+    drawEwThreats(g, k);                   // and the threat, over the lot
   }
 }
 

@@ -296,17 +296,23 @@
          where the truck is actually seen: simGig_gray.gif, laid over the
          camera's picture on the very spot the truck stood on. The simulator
          places it, because only it knows where the lens is pointing, and it
-         grows as you close in. The TIMES belong to the simulator too —
-         WEAPON_FLIGHT_S (10 s from the trigger to the strike), BOOM_HOLD_S
-         (3 s the burst then shows) and BOOM_SIZE_M (60 m across) at the top
-         of demo/main.ts. The one knob here is how it is laid on. */
-      --boom-blend: lighten;   /* the file is drawn on black, so only what is
-                                  BRIGHTER than the camera's picture shows:
-                                  the fire and the smoke come through and the
-                                  black around them does not. `screen` lifts
-                                  the whole square instead, which over a grey
-                                  picture washes it out; `normal` pastes the
-                                  file as it is, black square and all. */
+         grows as you close in. The TIMES AND SIZES belong to the simulator
+         too — WEAPON_FLIGHT_S (10 s from the trigger to the strike),
+         BOOM_PLAYS (how many times the file plays through), BOOM_SIZE_M and
+         BOOM_MIN_SHARE / BOOM_MAX_SHARE (the smallest and largest share of
+         the picture it may fill), all at the top of demo/main.ts. The knobs
+         here are only how it is laid on. */
+      --boom-blend: multiply;  /* simGig_gray.gif is dark smoke drawn on a
+                                  WHITE ground, so it is laid on in
+                                  `multiply`, where white counts for nothing
+                                  and only the smoke darkens what is under
+                                  it. That is what keeps its square from
+                                  showing. `normal` pastes the file as it is,
+                                  white square and all. */
+      --boom-white: 1.04;      /* the file's white is 246, not 255, which
+                                  would leave a faint square behind. This
+                                  lifts it the last of the way to pure white
+                                  so nothing of the square is left. */
 
       /* ── THE COMPASS ROSE, compass.png ──────────────────────────────
          The rings and the bearings, drawn about the aircraft's own place on
@@ -397,7 +403,7 @@
          comes out roughly 23% of it. 320 gives a triangle about 75 wide —
          the same as the red ones. */
       --target-after-show: 1;        /* 0 hides every struck mark */
-      --target-after-size: 140px;    /* the square's width; its height follows */
+      --target-after-size: 65px;    /* the square's width; its height follows */
       --target-after-anchor-x: 50%;  /* the middle of the triangle, measured */
       --target-after-anchor-y: 47.8%;/* off the artwork */
       --target-after-opacity: 100%;
@@ -427,7 +433,7 @@
          picture — the name underneath hangs below it — so the anchor is a
          third of the way down. */
       --target-truck-show: 1;
-      --target-truck-size: 60px;      /* the picture's width; its height follows */
+      --target-truck-size: 50px;      /* the picture's width; its height follows */
       --target-truck-anchor-x: 50%;   /* the middle of the ring */
       --target-truck-anchor-y: 33%;
       --target-truck-opacity: 100%;
@@ -506,10 +512,15 @@
       --cueline-dot-color: #FFCC00;
       --cueline-dot-stroke: 1.5px;
       --cueline-dot-stroke-color: #000000;
-      /* How much of the middle of the cue is laid back over the line, so that
-         the line passes UNDER the little icon there and over everything else.
-         Measured as a radius from the cue's centre, in design px. */
-      --cueline-cap: 24px;
+      /* THE LINE COMES OUT FROM UNDER THE BADGE at the middle of the cue,
+         and there is nothing to set for it any more. It used to be a round
+         hole left in the line, of a size given here — and a circle can only
+         ever be the wrong size, since the badge is a rounded oblong and a
+         different one in each of the three pictures: too small and the line
+         crossed over it, too big and the line stopped short of it, which is
+         the gap that showed. Now the badge itself is laid back over the
+         line, in its own shape, so the line ends exactly at its edge
+         whichever way it comes in. */
 
       /* The same line during LAUNCH: red, thicker, with a bigger dot. Anything
          left as var(--cueline-…) simply follows the tracking knob above. */
@@ -715,13 +726,27 @@
          that screen in this pane. The same screen may be shown in two panes
          at once; nothing stops it.
 
-         The button is laid OVER the one drawn into each screen's artwork, so
-         these three numbers are measured to cover those: they are shares of
-         the pane, and the button's height follows its own picture. */
-      --pane-button-x: 1.6%;
-      --pane-button-y: 1.3%;
-      --pane-button-w: 34.7%;
-      --pane-menu-gap: 0.6%;       /* the air between the button and the menu */
+         THE BUTTON IS ONE SIZE EVERYWHERE, in the frame's own pixels — not a
+         share of the screen it sits on. A share would make it huge on the
+         big screen of the half-and-half arrangement and small on the narrow
+         bar beside the map; measured here it is the same button wherever it
+         is, and it grows and shrinks only with the window, like everything
+         else. The numbers are what a share of 570 used to come to, so
+         nothing moved on the five-way arrangement it was measured on. The
+         button's own height follows its picture. */
+      --pane-button-x: 9.12px;     /* in from the left edge of the screen */
+      --pane-button-y: 7.41px;     /* down from its top edge */
+      /* ONE ARRANGEMENT SITS IT A LITTLE FURTHER IN. Half and half gives the
+         screen twice the room, so the artwork on it — its own corners and
+         the controls drawn into it — is twice the size, while the button
+         stays the size it is everywhere else. Set in from the corner by the
+         same amount the artwork is, it sits where the eye expects it rather
+         than crowding the corner. Only this arrangement uses these; raise
+         or lower them to move the button down and right, or back. */
+      --pane-button-x-half: 28px;
+      --pane-button-y-half: 18px;
+      --pane-button-w: 197.79px;   /* how wide the button is drawn */
+      --pane-menu-gap: 3.42px;     /* the air between the button and the menu */
       --pane-menu-mark: #1FC4B6;   /* the colour of the screen already shown */
       /* THE TALL LIST, in the five-way arrangement only. The right-hand
          column opens with the targets list alone, as tall as both screens
@@ -730,12 +755,16 @@
          screen underneath. Choose the list again and it goes tall again.
          No other screen is ever drawn tall, and the list is tall only there. */
       --pane-right-spare: radar;   /* ew, weapon, radar, targets or cam */
-      /* The tall list's shape: the height of list_5_layout_all.png over its
-         width, 4512/2284. The pane is given exactly this, so nothing is
-         stretched. Two screens and the gap between them would be 1147/570 =
-         2.0123; exporting the file 4596 px tall instead of 4512 would make
-         the column come down exactly level with the one beside it. */
-      --pane-tall-ratio: 1.9755;
+      /* THE TALL LIST IS AS TALL AS THE TWO SCREENS IT REPLACES — exactly:
+         both of them plus the gap between them, so its column stands level
+         with the one beside it, top and bottom, and the button in its corner
+         lines up with the button beside it.
+
+         list_5_layout_all.png is 2284 x 4600, a shape of 2.0140, and the two
+         screens and their gap come to 2.0123 — a difference of 0.08%, under
+         a pixel on the screen, which is what the picture is asked to give.
+         Nothing here depends on the file's own shape any more, so re-export
+         it at any height and the column still lines up. */
 
       /* ── THE WEAPONS SCREEN ──────────────────────────────────────────
          One of the eight stores is the SELECTED one, and it breathes: its
@@ -777,6 +806,13 @@
          the pane's shape ever differs from the file's, `contain` fits it all
          in. With --sidepane-grow the shapes match, so neither crops. */
       --sidepane-fit: cover;
+      /* WHERE THE CROP IS TAKEN FROM, when there is one. A picture taller
+         than its pane is held by its TOP, so what shows is the head of it —
+         the button in its corner and the rows under it — and whatever does
+         not fit runs off the bottom, which is where a list ends anyway. Left
+         to `center`, the crop is shared between the two ends and the top of
+         the picture is cut away, button and all. */
+      --sidepane-anchor: top center;
 
       /* ── THE CAMERA SCREEN ───────────────────────────────────────────
          The picture comes from a camera under the aircraft, looking 45° below
@@ -907,11 +943,13 @@
       --layoutglyph-w: 38%;        /* share of its pane's width */
       --layoutglyph-max: 22px;     /* …but never bigger than this */
 
-      /* `match` = as wide as the button it drops out of. */
-      --btn-friendlist-w: match; --btn-friendlist-h: auto; /* Friend_list_open.png */
-      /* `panel` = drawn at the friend list's own scale, so the bar below it is
-         the same size it is in the design and the two read as one panel. */
-      --btn-targets-w: panel;    --btn-targets-h: auto;  /* Targets_Close / _list_open */
+      /* `match` = as wide as the button it drops out of. The one picture
+         below is whichever of the three lists is on show — both lists
+         together, or one of them at full length. */
+      --btn-friendlist-w: match; --btn-friendlist-h: auto; /* the open list */
+      /* The two headings are not sized from here: they are laid into the
+         slots their lists leave for them, 408 of the 448 a list is across,
+         and they follow the list's own size exactly. */
 
       /* ── bottom centre: the data panel, and the two live numbers on it ── */
       --btn-bottompanel-w: 351px; --btn-bottompanel-h: 109px; /* Bottom Panel.png */
@@ -962,11 +1000,60 @@
       /* How far the whole panel sits above the bottom edge of the map. It is
          the panel's own knob, so moving it does not move the buttons in the
          corners (those are --btn-edge). */
-      --bottompanel-bottom: 18px;
+      --bottompanel-bottom: 10px;
+
+      /* ── THE DESIGNATION BOX, TD_box.png ─────────────────────────────
+         A press anywhere on the map that is not a mark of its own puts
+         this box on that spot: the place I mean. It is pinned to the
+         GROUND, so it stays there while the map moves under it, and drawn
+         at a fixed size on the screen, as a sight is, rather than growing
+         and shrinking with the zoom.
+
+         Press Slave while it is up and the belly camera goes to hold that
+         spot, exactly as it holds a mark; the box then stays for as long
+         as the camera is on it. Do nothing with it and it is simply gone
+         --td-hold seconds after it was put down. */
+      /* ── THE CHOSEN TARGET, IN EVERY LIST ───────────────────────────
+         A target picked out on the map is ringed in every list that names
+         it — the targets screens and the foes list — and picking a row in
+         a list does the same the other way about. This is that ring. */
+      /* ── THE EW SCREEN ──────────────────────────────────────────────
+         The threat the map is showing is shown here too, at its BEARING AND
+         RANGE from the aircraft rather than on its spot of ground: the
+         aircraft is the middle of the screen, its nose is up, and the two
+         range rings are the scale. The outer ring is this far off; the
+         inner one, as the artwork says, is half of it. A threat further out
+         than this is held on the outer ring rather than lost off the edge. */
+      --ew-range: 5;           /* nautical miles at the outer ring. The one
+                                  threat in the flight lights at 5.6 NM —
+                                  10.3 km, 8 km ahead and 6.5 to the side —
+                                  so at 8 it comes up at about seven tenths
+                                  of the way out and closes from there. Make
+                                  this number SMALLER to push it further
+                                  out, bigger to bring it in. */
+      --ew-threat-size: 300;   /* how big a threat is drawn, in the
+                                  artwork's own pixels (it is 2284 across) */
+
+      --row-ring-colour: #FFFFFF;
+      --row-ring-width: 1.5px;
+
+      --td-size: 37px;         /* how big the box is drawn */
+      --td-hold: 6s;           /* how long it waits to be used */
+      --td-opacity: 100%;      /* 100% as the file is; less to quieten it */
 
       /* ── bottom-right stack, top to bottom ──            width / height ── */
-      --btn-rdr-w: 63px;         --btn-rdr-h: 67px;      /* RDR.png — above data */
-      --btn-data-w: 64px;        --btn-data-h: 192px;     /* data.png — RF / F / C */
+      /* THE DATA CONTROL. One picture in place of the two that used to stand
+         here, and it has three faces: data_mode1, 2 and 3. Pressing its TOP
+         CELL — the one with the two arrows — goes on to the next and round
+         again. All three files are 256 x 1044, and the size is written out
+         here rather than taken from each file, so not a pixel can move
+         between them: what you see is a button being pressed, not a picture
+         being swapped. 261 is what 64 across comes to at the file's own
+         shape. */
+      --btn-datamode-w: 64px;    --btn-datamode-h: 261px;
+      /* How much of it from the top answers a press — the top cell ends a
+         quarter of the way down. */
+      --btn-datamode-key: 25%;
       --btn-tool-w: 64px;        --btn-tool-h: 64px;     /* Tool.png */
       --btn-layers-w: 64px;      --btn-layers-h: 64px;   /* Layers.png — Figma 64 x 64 */
     }
@@ -1085,6 +1172,10 @@
        place, and if the markings file is not in the folder yet, the picture
        simply shows without them. */
     .camPane { position: relative; isolation: isolate; }
+    /* The EW screen is two pictures laid one over the other, and the upper
+       one turns with north — see drawEw. */
+    .ewView { position: absolute; inset: 0; width: 100%; height: 100%; }
+
     .camView, .camOverlay {
       position: absolute; inset: 0; width: 100%; height: 100%;
       pointer-events: none;
@@ -1110,18 +1201,46 @@
      * is laid over the top of them, in the same place on every screen, and it
      * is what reacts to a press. The menu drops from under it.
      */
+    /*
+     * WHY THE DROP FROM THE TOP IS A MARGIN AND NOT A `top`.
+     *
+     * Every one of these numbers is a share of the pane, and `top` takes its
+     * share of the pane's HEIGHT — which is fine while the panes are square,
+     * and wrong the moment one of them is the TALL list: twice the height
+     * means twice the drop, and that screen's button sits visibly lower than
+     * its neighbour's. A margin's share is taken from the pane's WIDTH, and
+     * every pane in an arrangement is the same width, so the button lands at
+     * the same place on all of them, tall or short — and still grows with
+     * the pane where the arrangement makes it bigger.
+     */
     .paneBtn {
       position: absolute; margin: 0; padding: 0; border: 0; background: none;
-      left: var(--pane-button-x, 1.6%); top: var(--pane-button-y, 1.3%);
-      width: var(--pane-button-w, 34.7%);
+      left: calc(var(--pane-button-x) * var(--ui-scale-num, 1));
+      top: calc(var(--pane-button-y) * var(--ui-scale-num, 1));
+      width: calc(var(--pane-button-w) * var(--ui-scale-num, 1));
       cursor: pointer; pointer-events: auto; z-index: 3;
       line-height: 0;
     }
     .paneBtn img { display: block; width: 100%; height: auto; object-fit: fill; }
+    /*
+     * THE MENU HANGS FROM THE FOOT OF THE BUTTON, and works it out from the
+     * two pictures rather than from a number of its own:
+     *
+     *   Cam_button.png and the rest are 709 x 225, and the pill in them is
+     *   202 of those 225 tall — so the pill's foot is the button's width
+     *   times 202/709 below its top.
+     *   Drop-down.png is 709 x 1103 with its panel starting 22 down, so the
+     *   panel's own top inset is the width times 22/709, which is taken off
+     *   again so that the AIR between the two is --pane-menu-gap exactly.
+     */
     .paneMenu {
       position: absolute; z-index: 4; display: none;
-      left: var(--pane-button-x, 1.6%);
-      width: var(--pane-button-w, 34.7%);
+      left: calc(var(--pane-button-x) * var(--ui-scale-num, 1));
+      top: calc((var(--pane-button-y)
+                 + var(--pane-button-w) * 202 / 709
+                 + var(--pane-menu-gap)
+                 - var(--pane-button-w) * 22 / 709) * var(--ui-scale-num, 1));
+      width: calc(var(--pane-button-w) * var(--ui-scale-num, 1));
       pointer-events: auto;
     }
     .paneMenu.is-open { display: block; }
@@ -1176,6 +1295,7 @@
     .sidePane img {
       display: block; width: 100%; height: 100%;
       object-fit: var(--sidepane-fit);
+      object-position: var(--sidepane-anchor, top center);
       user-select: none; -webkit-user-drag: none;
     }
 
@@ -1198,17 +1318,18 @@
        in place of both screens, and the one that would be under it is put
        away. Its artwork is the taller file.
 
-       Its height comes from THE FILE'S OWN SHAPE — --pane-tall-ratio, the
-       taller file's height over its width — and not from the two screens it
-       replaces, so the picture is never stretched and the button in its
-       corner keeps its proper shape. Where the file's shape does not quite
-       come to the two screens' height, the column ends a little short of the
-       one beside it; export the file at that exact shape and the two line up
-       to the pixel. */
+       IT IS GIVEN THE HEIGHT OF THE TWO SCREENS IT REPLACES — both of them
+       and the gap between them — rather than the height its own file happens
+       to have. The two are within a tenth of a per cent of each other, so
+       nothing in the picture can be seen to give; what it buys is that the
+       column stands exactly level with the one beside it. A column that came
+       up even a few pixels short would be CENTRED in its place, which drops
+       its top edge by half of what it lacks and carries the button in its
+       corner down with it — plainly lower than the button beside it. */
     #screen.is-five #rightCol.is-tall > .sidePane:first-child {
       height: calc(
-        var(--sidepane-w-px, calc(var(--sidepane-w) * 1px * var(--ui-scale-num, 1)))
-        * var(--pane-tall-ratio));
+        2 * var(--sidepane-h-px, calc(var(--sidepane-h) * 1px * var(--ui-scale-num, 1)))
+        + var(--sidepane-gap-fitted, var(--sidepane-gap)));
     }
     #screen.is-five #rightCol.is-tall > .sidePane:last-child { display: none; }
     /* The map keeps the square the design gives it — 1140 x 1140 of the
@@ -1220,15 +1341,27 @@
     }
 
     /*
-     * Half and half: the map on the left, the radar screen on the right, each
+     * Half and half: the SCREEN on the left and the MAP on the right, each
      * the square the design gives it — --layout-half-size of the frame, the
      * same 1140 the map has in the five-way arrangement. Sizing them rather
      * than letting them share out the window is what keeps the artwork from
      * being pulled about on a window of another shape; the pair is centred,
      * and what is left over is air on either side.
+     *
+     * The map comes first in the page, as it does in every other
+     * arrangement, so here the two are simply put in the other order rather
+     * than moved about: nothing in the page changes, only which side each
+     * lands on.
      */
+    /* The button and its menu are both placed from these two, so setting
+       them here moves the pair together and nothing else has to know. */
+    #screen.is-half #halfCol .sidePane {
+      --pane-button-x: var(--pane-button-x-half, 18.24px);
+      --pane-button-y: var(--pane-button-y-half, 14.82px);
+    }
     #screen.is-half { align-items: center; justify-content: center; }
-    #screen.is-half #halfCol { display: flex; flex: 0 0 auto; }
+    #screen.is-half #halfCol { display: flex; flex: 0 0 auto; order: 1; }
+    #screen.is-half #mapArea { order: 2; }
     #screen.is-half #mapArea,
     #screen.is-half #halfCol .sidePane {
       flex: 0 0 auto;
@@ -1320,13 +1453,11 @@
     #btn23d      { --w: var(--btn-23d-w);      --h: var(--btn-23d-h); }
     #btnZoom     { --w: var(--btn-zoom-w);     --h: var(--btn-zoom-h); }
     #btnLocation { --w: var(--btn-location-w); --h: var(--btn-location-h); }
-    #btnRdr      { --w: var(--btn-rdr-w);      --h: var(--btn-rdr-h); }
-    #btnData     { --w: var(--btn-data-w);     --h: var(--btn-data-h); }
+    #btnDataMode { --w: var(--btn-datamode-w); --h: var(--btn-datamode-h); }
     #btnTool     { --w: var(--btn-tool-w);     --h: var(--btn-tool-h); }
     #btnLayers   { --w: var(--btn-layers-w);   --h: var(--btn-layers-h); }
     #btnFriends  { --w: var(--btn-friends-w);  --h: var(--btn-friends-h); }
     #friendList  { --w: var(--btn-friendlist-w); --h: var(--btn-friendlist-h); }
-    #btnTargets  { --w: var(--btn-targets-w);  --h: var(--btn-targets-h); }
     #bottomPanelImg { --w: var(--btn-bottompanel-w); --h: var(--btn-bottompanel-h); }
     /*
      * Some of the artwork carries its own soft glow — a few per cent of
@@ -1352,14 +1483,21 @@
     }
 
     /*
-     * TOP-LEFT: the friends button, and what it opens.
+     * TOP-LEFT: the friends-and-foes button, and what it opens.
      *
-     * Open, a single panel hangs under the button: the friend list, and the
-     * targets bar below it, parted by --panel-gap. The targets bar is itself a
-     * button — it swaps
-     * in place between its closed bar and its open list, and because both are
-     * drawn at the friend list's own scale, the open list arrives exactly the
-     * width of the panel, as designed.
+     * Pressing it drops BOTH LISTS: the foes above, the friends below, as one
+     * picture. Each list has its own bar as its heading, and pressing a bar
+     * shuts that list:
+     *
+     *   shut the FOES    the friends take the whole length, and the foes'
+     *                    bar stays above them, shut.
+     *   shut the FRIENDS the foes take the whole length, and the friends'
+     *                    bar goes BELOW them, shut.
+     *   shut both        the two bars, one above the other, and no list.
+     *
+     * Pressing a shut bar opens that list again. All of it is four pictures,
+     * one for each way the panel can stand, with the two bars as pictures of
+     * their own — nothing is stretched or cut to fit.
      */
     #mapButtonsLeft {
       position: absolute; top: var(--btn-edge-fitted, var(--btn-edge));
@@ -1368,14 +1506,34 @@
       gap: var(--btn-gap-fitted, var(--btn-gap));
       pointer-events: none;
     }
-    #friendPanel {
-      display: none; flex-direction: column; align-items: center;
-      gap: var(--panel-gap-fitted, var(--panel-gap));
+    #friendPanel { display: none; position: relative; }
+    /*
+     * A HEADING IS ONE BUTTON THAT NEVER MOVES.
+     *
+     * Each list leaves an empty slot where its heading belongs, and the
+     * heading is laid into it — 20 px in from either side of a 448-wide
+     * list, 176 tall, measured off the artwork. Open or shut, it is the SAME
+     * element in the SAME place; only the picture on it changes, so pressing
+     * it reads as a button being pressed and not as one picture swapped for
+     * another somewhere else.
+     *
+     * The foes' heading is always at the top. The friends' moves, because it
+     * is meant to: it sits in the middle while both lists are open, under
+     * the foes' heading when the foes are shut, and at the very bottom when
+     * the friends themselves are shut. Every one of those places is worked
+     * out from the list's own box — see placeListBars in demo/map.ts.
+     */
+    .listBar {
+      position: absolute; height: auto; z-index: 1;
+      pointer-events: auto; cursor: pointer;
+      user-select: none; -webkit-user-drag: none;
     }
+    /* Shut, the lists leave the panel: the two headings are all that is left. */
+    #friendList.is-shut { visibility: hidden; }
     #mapButtonsLeft.is-friendsOpen #friendPanel { display: flex; }
 
     /* The buttons that react to a click. */
-    #btnFriends, #btnTargets, #btnLocation { pointer-events: auto; cursor: pointer; }
+    #btnFriends, #btnLocation, #btnDataMode { pointer-events: auto; cursor: pointer; }
 
     /*
      * A LIVE REGION ON ONE PICTURE. layout.png carries three buttons on a
@@ -1511,16 +1669,66 @@
        a press. It goes OVER the camera's own markings, as the thing nearest
        the eye.
 
-       The file is drawn on BLACK rather than on nothing, so it is blended
-       with what is under it instead of being pasted over it: in `screen`,
-       black counts for nothing and only the fire shows. */
-    .camBoom {
+       simGig_gray.gif is drawn on WHITE rather than on nothing, so it is
+       blended with what is under it instead of being pasted over it: in
+       `multiply` white counts for nothing and only the smoke shows — see
+       --boom-blend and --boom-white.
+
+       `.sidePane img` stretches a picture to fill its pane, which is right
+       for the screen artwork and quite wrong for this: named with its tag
+       and its pane this rule outweighs that one, so the burst keeps the
+       shape of its own file. */
+    .camPane img.camBoom {
       position: absolute; z-index: 6;
       transform: translate(-50%, -50%);
-      height: auto; pointer-events: none;
-      mix-blend-mode: var(--boom-blend, screen);
+      width: auto; height: auto; object-fit: fill;
+      pointer-events: none;
+      filter: brightness(var(--boom-white, 1.04));
+      mix-blend-mode: var(--boom-blend, multiply);
     }
-    .camBoom.is-off { display: none; }
+    .camPane img.camBoom.is-off { display: none; }
+
+    /*
+     * THE TARGETS LIST, AND SCROLLING IT.
+     *
+     * There is one list file and it is longer than any slot it is put in, so
+     * it is never squeezed to fit and never cropped in the middle: it is
+     * shown from its top down, as much of it as the slot holds, and the rest
+     * is scrolled to. The SLOT itself does not scroll — the button in its
+     * corner would slide away with it — so the picture sits in a box of its
+     * own that does, under the button.
+     */
+    .listScroll {
+      position: absolute; inset: 0;
+      overflow-x: hidden; overflow-y: auto;
+      overscroll-behavior: contain;
+      /* NO SCROLLBAR IS DRAWN. One would take a dozen pixels of width out of
+         the picture — which would then be drawn narrower, and come up short
+         of the foot of a slot it ought to fill exactly. The wheel and the
+         trackpad scroll it as they always do; there is simply no bar in the
+         way of the artwork. */
+      scrollbar-width: none;
+    }
+    .listScroll::-webkit-scrollbar { width: 0; height: 0; }
+    /* The picture takes the slot's width and keeps its own shape, however
+       long that makes it — which is the whole point: the length is what is
+       scrolled through. */
+    .sidePane .listScroll img {
+      display: block; width: 100%; height: auto;
+      object-fit: fill; object-position: top center;
+    }
+
+    /*
+     * THE RING ROUND A CHOSEN ROW. A white line laid over the list's own
+     * artwork, on the row whose target is picked out — the same target that
+     * is wearing its chosen face on the map. It is drawn OVER the picture
+     * and never in the way of a press, so pressing the row again lets it go.
+     */
+    .rowRing {
+      position: absolute; pointer-events: none; z-index: 2;
+      border: var(--row-ring-width, 1.5px) solid var(--row-ring-colour, #FFFFFF);
+      box-sizing: border-box;
+    }
 
     #bottomPanel.is-missing { display: none; }
     #bottomPanelImg { display: block; }
@@ -1652,15 +1860,23 @@
 
     <div id="mapButtonsLeft">
       <img class="mapBtn" id="btnFriends" src="./icons/Friends%20and%20targets_Close.png" alt="Friends and targets">
+      <!-- The foes' bar when it is shut, then whichever list is on show,
+           then the friends' bar when IT is shut: in that order, so each
+           lands where it belongs however the panel stands.
+
+           The lists are drawn WITHOUT their headings — each leaves an empty
+           slot where its bar belongs — and the two open bars are laid into
+           those slots here. So a bar is one picture whether its list is open
+           or shut, and it is never part of the list it heads. -->
       <div id="friendPanel">
-        <img class="mapBtn" id="friendList" data-match="btnFriends" src="./icons/Friend_list_open.png" alt="Friends">
-        <img class="mapBtn" id="btnTargets" data-scale="friendList" src="./icons/Targets_Close.png" alt="Targets">
+        <img class="mapBtn" id="friendList" data-match="btnFriends" src="./icons/Friend%20and%20Foes_list_open.png" alt="Foes and friends">
+        <img class="listBar" id="foesBar" src="./icons/Foes_list_open.png" alt="Foes">
+        <img class="listBar" id="friendsBar" src="./icons/Friend_list_open.png" alt="Friends">
       </div>
     </div>
 
     <div id="mapButtonsBottom">
-      <img class="mapBtn" id="btnRdr" src="./icons/RDR.png" alt="Radar">
-      <img class="mapBtn tall" id="btnData" src="./icons/data.png" alt="Data">
+      <img class="mapBtn" id="btnDataMode" src="./icons/data_mode1.png" alt="Data mode">
       <img class="mapBtn square" id="btnTool" src="./icons/Tool.png" alt="Tool">
       <img class="mapBtn square" id="btnLayers" src="./icons/Layers.png" alt="Layers">
     </div>
@@ -1680,7 +1896,8 @@
     <div id="wait">Waiting for the simulator…<br>Start the flight in the simulator window.</div>
   </div>
 
-    <!-- Half and half: the camera screen on the right of the map. -->
+    <!-- Half and half: the camera screen on the LEFT of the map (the page
+         keeps the map first; the arrangement puts it on the right). -->
     <div class="sideCol" id="halfCol">
       <!-- Half and half: one big square beside the map, and it is a SLOT like
            the four small ones — the button in its corner chooses what is on
@@ -1691,17 +1908,15 @@
       <div class="sidePane" data-pane="cam"></div>
     </div>
 
-    <!-- The map with a bar beside it: the list above, the camera below. Both
-         have artwork of their own for this arrangement — the 3_layout files,
-         drawn at the shapes this bar gives them. -->
+    <!-- The map with a bar beside it. Both of these are SLOTS like every
+         other screen — the button in the corner chooses what is on them —
+         and they open on the list above and the camera below. Those two have
+         artwork of their own for this arrangement, the 3_layout files, drawn
+         at the shapes this bar gives them; any other screen chosen here
+         wears its usual face. -->
     <div class="sideCol" id="sideCol">
-      <div class="sidePane" id="sideTop">
-        <img src="./icons/list_3_layout.png" alt="List">
-      </div>
-      <div class="sidePane camPane" id="sideBottom">
-        <canvas class="camView"></canvas>
-        <img class="camOverlay" src="./icons/cam_3_layout.png" alt="Camera">
-      </div>
+      <div class="sidePane" id="sideTop" data-pane="targets"></div>
+      <div class="sidePane" id="sideBottom" data-pane="cam"></div>
     </div>
 
     <!-- …and two on its right. -->

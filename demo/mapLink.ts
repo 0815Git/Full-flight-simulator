@@ -65,6 +65,10 @@ export interface MapFix {
     /** which family of look knobs it is drawn with; left out, 'threat'.
      *  'truck' is the one that can be pressed on the map. */
     kind?: 'threat' | 'after' | 'befor' | 'truck';
+    /** Whether the weapon can take this mark out; left out, it can. False
+     *  says the mark has no struck face — no _after file exists for it — so
+     *  the map never looks for one and never shows it as destroyed. */
+    strike?: boolean;
   }[];
   /** THE MARKS THAT HAVE BEEN DESTROYED, by id. The simulator counts the
    *  weapon's flight time, takes the model out of the world and says so here,
@@ -141,9 +145,26 @@ export interface FireOrder {
   kind: 'fire';
 }
 
+/**
+ * A CAMERA KEY ON THE THROTTLE, pressed in the simulator's window.
+ *
+ * Two of the throttle's buttons do what the map's own panel does, so the
+ * hand on the throttle never has to reach for the mouse:
+ *
+ *   'slave' — b6, the Slave key: hold the mark that is picked out on the map,
+ *             or let go if one is already held. The map answers with a
+ *             SlaveOrder, exactly as if the key on the panel had been pressed.
+ *   'reset' — b7: the camera goes back to resting, and the map drops the
+ *             mark it was holding.
+ */
+export interface CamKeyOrder {
+  kind: 'camkey';
+  what: 'slave' | 'reset';
+}
+
 /** What arrives on the channel: a position fix, a camera frame, or an order
  *  passing between the two windows. */
-export type MapMessage = MapFix | CamFrame | SlaveOrder | FireOrder;
+export type MapMessage = MapFix | CamFrame | SlaveOrder | FireOrder | CamKeyOrder;
 
 /** The window name of the map popup — reusing it focuses the same window. */
 const MAP_WINDOW = 'flightsim-map-window';

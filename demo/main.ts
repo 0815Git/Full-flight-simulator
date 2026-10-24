@@ -24,6 +24,7 @@ import { Terrain, ZOOM_LEVELS, type WorldConfig, worldFromLatLon } from '../src'
 import { FM, SPEED_RULE, applyStick, speedRuleTrimThrottle, stepDynamics } from './flight';
 import {
   MAP_CHANNEL, type MapFix, type CamFrame, type SlaveOrder, type FireOrder,
+  type CamKeyOrder,
   TRAIL_EVERY, openMapWindow,
 } from './mapLink';
 
@@ -176,18 +177,30 @@ const CAM_STABILISED = true; // false = bolted to the airframe
  * thirtieth of the picture's width from 5 km off — small, but plainly a
  * vehicle, which is what a sensor at that range would give you.
  */
-const CAM_PITCH_DEG = 2;    // how far below the horizon it looks
-const CAM_FOV_DEG = 8;       // how wide it sees
+const CAM_PITCH_DEG = 1;    // how far below the horizon it looks
+const CAM_FOV_DEG = 10;       // how wide it sees
 const CAM_PX = 768;          // the picture's size, square, in CSS px
+/** How many DEVICE pixels are left behind on every edge when the picture is
+ *  taken off the canvas — see sendCamFrame. Two is enough for any screen
+ *  ratio; nothing but the camera's own pixels can get in past it. */
+const CAM_EDGE_TRIM = 2;
 const CAM_FPS = 15;          // frames a second sent to the map
 
 /**
  * ── STEERING IT FROM THE THROTTLE ──────────────────────────────────────────
  *
- * Four buttons on the throttle swing the camera about while they are held:
- * two walk it from the horizon down past straight-down and on behind the
- * aircraft, two swing it to the sides. Letting go leaves it where it was
- * pointed, which is how a real sensor behaves.
+ * Six buttons on the throttle work the camera. Four of them swing it about
+ * while they are held — up towards the horizon and down past straight-down,
+ * and round to either side — and letting go leaves it where it was pointed,
+ * which is how a real sensor behaves. The other two are presses:
+ *
+ *   b2  camera UP            b6  SLAVE: hold the mark picked out on the map
+ *   b4  camera DOWN          b7  RESET: back to resting, and let any mark go
+ *   b3  camera RIGHT
+ *   b5  camera LEFT
+ *
+ * b6 does exactly what the Slave key on the map's own panel does, and the
+ * key on the panel still works: either hand can do it.
  *
  * The numbers below are the button numbers the THROTTLE ITSELF carries — b2
  * is 2 here, and so on. (The login screen logs every button pressed with the
@@ -198,11 +211,12 @@ const CAM_FPS = 15;          // frames a second sent to the map
  * throttle, the two switches below turn that pair over without touching
  * anything else.
  */
-const CAM_BTN_LEFT = 2;      // b2
-const CAM_BTN_FORWARD = 3;   // b3 — towards the horizon
-const CAM_BTN_RIGHT = 4;     // b4
-const CAM_BTN_BACK = 5;      // b5 — further down, and on behind
-const CAM_BTN_CENTRE = [6, 7];  // b6 or b7 — back to where it rests
+const CAM_BTN_UP = 2;        // b2 — towards the horizon and above it
+const CAM_BTN_RIGHT = 3;     // b3
+const CAM_BTN_DOWN = 4;      // b4 — further down, and on behind
+const CAM_BTN_LEFT = 5;      // b5
+const CAM_BTN_SLAVE = 6;     // b6 — the Slave key, under the thumb
+const CAM_BTN_CENTRE = [7];  // b7 — back to where it rests
 const CAM_PAN_INVERT_SIDE = false;
 const CAM_PAN_INVERT_DOWN = false;
 const CAM_PAN_RATE = 45;     // degrees a second while a button is held
@@ -214,21 +228,41 @@ const CAM_SIDE_MAX = 180;    // how far round to each side
 let camPanDown = 0;
 let camPanSide = 0;
 
+/** b6 is a PRESS, not a hold: it must not fire again while it is held down. */
+let slaveKeyWasDown = false;
+
 /** Called every frame: the buttons swing the camera while they are held. */
 function panCamera(dt: number): void {
   const { throttle } = warthogPads();
   if (!throttle) return;
   const held = (i: number) => !!throttle.buttons[i]?.pressed;
-  // b6 or b7: straight back to where the camera rests.
-  if (CAM_BTN_CENTRE.some(held)) { camPanDown = 0; camPanSide = 0; setSlave(null); return; }
+
+  // b6: the Slave key. The map is the screen that knows which mark is picked
+  // out, so the press is handed over to it and the map answers by saying
+  // which spot to hold — the same path the key on its own panel takes.
+  const slaveNow = held(CAM_BTN_SLAVE);
+  if (slaveNow && !slaveKeyWasDown) {
+    mapChannel.postMessage({ kind: 'camkey', what: 'slave' } satisfies CamKeyOrder);
+  }
+  slaveKeyWasDown = slaveNow;
+
+  // b7: straight back to where the camera rests — pointing, lens and mark.
+  if (CAM_BTN_CENTRE.some(held)) {
+    camPanDown = 0;
+    camPanSide = 0;
+    camFov = CAM_FOV_DEG;
+    setSlave(null);
+    mapChannel.postMessage({ kind: 'camkey', what: 'reset' } satisfies CamKeyOrder);
+    return;
+  }
   // A hand on the pan buttons takes the camera back off whatever mark the map
   // had given it to hold.
-  if ([CAM_BTN_BACK, CAM_BTN_FORWARD, CAM_BTN_RIGHT, CAM_BTN_LEFT].some(held)) setSlave(null);
+  if ([CAM_BTN_DOWN, CAM_BTN_UP, CAM_BTN_RIGHT, CAM_BTN_LEFT].some(held)) setSlave(null);
   const step = CAM_PAN_RATE * dt;
   const down = CAM_PAN_INVERT_DOWN ? -step : step;
   const side = CAM_PAN_INVERT_SIDE ? -step : step;
-  if (held(CAM_BTN_BACK)) camPanDown += down;
-  if (held(CAM_BTN_FORWARD)) camPanDown -= down;
+  if (held(CAM_BTN_DOWN)) camPanDown += down;
+  if (held(CAM_BTN_UP)) camPanDown -= down;
   if (held(CAM_BTN_RIGHT)) camPanSide += side;
   if (held(CAM_BTN_LEFT)) camPanSide -= side;
   camPanDown = Math.min(CAM_DOWN_MAX - CAM_PITCH_DEG,
@@ -239,35 +273,24 @@ function panCamera(dt: number): void {
 /**
  * ── ZOOMING IT ─────────────────────────────────────────────────────────────
  *
- * b8 zooms in and b9 zooms out, and they work whatever the camera is doing —
- * but what they change depends on which of its two ways it is working in:
+ * b8 zooms in and b9 zooms out, and they are the ONLY thing that zooms. The
+ * lens starts at CAM_FOV_DEG and holding a button narrows or widens it, and
+ * that holds whatever else the camera is doing: slaving a mark swings the
+ * camera onto it and nothing more — whoever is on the throttle decides
+ * whether to go in closer. b7 puts the lens back to where it started along
+ * with everything else.
  *
- *   FREE, pointed by its own pitch and pan, they change the LENS: CAM_FOV_DEG
- *   is where it starts, and holding a button narrows or widens it.
- *
- *   SLAVED to a mark, they change HOW MUCH GROUND the picture is to cover AT
- *   THE MARK — CAM_SLAVE_FRAME_M, in metres. The lens is then worked out from
- *   that and the range every frame, so the mark is drawn the same size on the
- *   screen whether it is five kilometres off or twenty: the further it is,
- *   the tighter the lens goes. That is what makes a slaved mark readable at
- *   any range, which a fixed lens never can be.
- *
- * Either way the lens is kept between CAM_FOV_MIN and CAM_FOV_MAX, so it can
- * neither narrow to nothing nor open past what the eye would accept.
+ * The lens is kept between CAM_FOV_MIN and CAM_FOV_MAX, so it can neither
+ * narrow to nothing nor open past what the eye would accept.
  */
 const CAM_ZOOM_BTN_IN = 8;        // b8
 const CAM_ZOOM_BTN_OUT = 9;       // b9
 const CAM_ZOOM_RATE = 2.2;        // times in or out a second, held down
 const CAM_FOV_MIN = 0.4;          // the tightest the lens may go
 const CAM_FOV_MAX = 60;           // and the widest
-/** How much ground the picture covers AT THE MARK while slaved, in metres. */
-const CAM_SLAVE_FRAME_M = 300;
-const CAM_FRAME_MIN = 20;
-const CAM_FRAME_MAX = 6_000;
 
-/** The lens while it is free, and the ground it frames while it is slaved. */
+/** The lens, wherever the zoom buttons have left it. */
 let camFov = CAM_FOV_DEG;
-let camFrameM = CAM_SLAVE_FRAME_M;
 
 /**
  * ── THE TRIGGER ────────────────────────────────────────────────────────────
@@ -299,15 +322,37 @@ let camFrameM = CAM_SLAVE_FRAME_M;
 const WEAPON_BTN_HALF = 0;        // b0 — the first pull
 const WEAPON_BTN_FULL = 5;        // b5 — pulled home
 const WEAPON_FIRE_ON_HALF = true;
+/** Other buttons on the STICK that fire exactly as the trigger does. */
+const WEAPON_BTN_ALSO = [1];      // b1
 
 /** Seconds from the trigger to the strike. */
 const WEAPON_FLIGHT_S = 10;
-/** Seconds the burst then stands on the camera screen. */
-const BOOM_HOLD_S = 3;
+/** HOW LONG THE BURST STANDS on the camera screen. The file runs for five
+ *  seconds and then starts again by itself, so this is really a number of
+ *  plays: three times through, fifteen seconds. */
+const BOOM_GIF_S = 5;             // how long one play of the file lasts
+const BOOM_PLAYS = 3;             // how many times it plays through
+const BOOM_HOLD_S = BOOM_GIF_S * BOOM_PLAYS;
 /** How big the burst is ON THE GROUND, in metres across. Bigger than the
  *  truck, as a burst is: this is what makes it swell as you close in and as
  *  the camera zooms. */
 const BOOM_SIZE_M = 60;
+/**
+ * AND HOW SMALL IT IS EVER ALLOWED TO LOOK, as a share of the camera's
+ * picture. Sixty metres at ten kilometres through a wide lens is four per
+ * cent of the frame — twenty pixels, which is nothing to see. So the burst
+ * is never drawn smaller than BOOM_MIN_SHARE of the picture however far off
+ * it is: close in, or with the camera zoomed, its real size takes over and
+ * it grows from there. BOOM_MAX_SHARE keeps it from swallowing the screen
+ * when it is right underneath.
+ */
+const BOOM_MIN_SHARE = 0.12;
+const BOOM_MAX_SHARE = 0.40;
+
+/** THE TRIGGER WITHOUT THE STICK. Pressing F does exactly what the red
+ *  trigger does, so the whole chain can be tried from the keyboard on a
+ *  machine with no joystick plugged in. Set it to '' to turn it off. */
+const WEAPON_KEY = 'KeyF';
 
 let triggerWasDown = false;
 /** Set once the weapon lands, and never unset while the flight runs. */
@@ -324,7 +369,7 @@ const struckMarks = new Set<string>();
 function strikeTheModel(): void {
   modelStruck = true;
   if (modelGroup) modelGroup.visible = false;
-  for (const t of TARGETS) if (t.kind === 'truck') struckMarks.add(t.file);
+  for (const t of TARGETS) if (t.kind === 'truck' && t.strike !== false) struckMarks.add(t.file);
   boomUntil = performance.now() + BOOM_HOLD_S * 1000;
 }
 
@@ -338,15 +383,18 @@ function watchTrigger(): void {
   // Held at all, by either stage, is the trigger down. Taking it as one
   // thing is what keeps a pull that carries on from the first stage to the
   // second from counting twice.
-  const down = WEAPON_FIRE_ON_HALF ? (half || full) : full;
-  if (down && !triggerWasDown) {
-    mapChannel.postMessage({ kind: 'fire' } satisfies FireOrder);
-    if (!modelStruck) {
-      window.clearTimeout(strikeTimer);
-      strikeTimer = window.setTimeout(strikeTheModel, WEAPON_FLIGHT_S * 1000);
-    }
-  }
+  const down = (WEAPON_FIRE_ON_HALF ? (half || full) : full)
+    || WEAPON_BTN_ALSO.some(held);
+  if (down && !triggerWasDown) pullTrigger();
   triggerWasDown = down;
+}
+
+/** The trigger has gone, whichever way it was pulled. */
+function pullTrigger(): void {
+  mapChannel.postMessage({ kind: 'fire' } satisfies FireOrder);
+  if (modelStruck) return;                 // there is nothing left to hit
+  window.clearTimeout(strikeTimer);
+  strikeTimer = window.setTimeout(strikeTheModel, WEAPON_FLIGHT_S * 1000);
 }
 
 /**
@@ -363,8 +411,10 @@ function boomInFrame(): { x: number; y: number; w: number } | undefined {
   const d = camCamera.position.distanceTo(at);
   const ndc = at.project(camCamera);
   if (ndc.z > 1) return undefined;             // behind the lens
-  // A thing BOOM_SIZE_M across at that range fills this much of the picture.
-  const w = BOOM_SIZE_M / (2 * d * Math.tan((camCamera.fov * Math.PI) / 360));
+  // A thing BOOM_SIZE_M across at that range fills this much of the picture —
+  // held between the two shares above, so it is always there to be seen.
+  const real = BOOM_SIZE_M / (2 * d * Math.tan((camCamera.fov * Math.PI) / 360));
+  const w = Math.min(BOOM_MAX_SHARE, Math.max(BOOM_MIN_SHARE, real));
   return { x: (ndc.x + 1) / 2, y: (1 - ndc.y) / 2, w };
 }
 
@@ -377,18 +427,13 @@ function zoomCamera(dt: number): void {
   const out = held(CAM_ZOOM_BTN_OUT);
   if (inn === out) return;                   // neither, or both: leave it be
   const k = CAM_ZOOM_RATE ** dt;             // smooth however fast the frames
-  if (inn) { camFov /= k; camFrameM /= k; } else { camFov *= k; camFrameM *= k; }
+  if (inn) camFov /= k; else camFov *= k;
   camFov = Math.min(CAM_FOV_MAX, Math.max(CAM_FOV_MIN, camFov));
-  camFrameM = Math.min(CAM_FRAME_MAX, Math.max(CAM_FRAME_MIN, camFrameM));
 }
 
-/** The lens this frame: worked out from the range while slaved, and whatever
- *  the buttons have left it at while free. */
-function camFovNow(range: number): number {
-  const want = slavedTo
-    ? (2 * Math.atan((camFrameM / 2) / Math.max(1, range)) * 180) / Math.PI
-    : camFov;
-  return Math.min(CAM_FOV_MAX, Math.max(CAM_FOV_MIN, want));
+/** The lens this frame: wherever the zoom buttons have left it, slaved or not. */
+function camFovNow(): number {
+  return Math.min(CAM_FOV_MAX, Math.max(CAM_FOV_MIN, camFov));
 }
 
 const camCamera = new THREE.PerspectiveCamera(CAM_FOV_DEG, 1, 1, 400_000);
@@ -411,11 +456,11 @@ const _camUp = new THREE.Vector3(0, 1, 0);
  * ── SLAVED TO A MARK ───────────────────────────────────────────────────────
  *
  * The map can hand the camera a place on the ground to hold: press a mark on
- * the map to pick it out, then press Slave on the panel under it, and the
- * camera looks at that spot and keeps looking at it however the aircraft
- * turns — the pitch and the pan are set aside while it does. Pressing Slave
- * again lets it go, and so does touching the pan buttons: the hand on the
- * throttle always wins.
+ * the map to pick it out, then press Slave — on the panel under it, or b6 on
+ * the throttle — and the camera looks at that spot and keeps looking at it
+ * however the aircraft turns; the pitch and the pan are set aside while it
+ * does, and the lens stays where it was. Pressing Slave again lets it go, and
+ * so does touching the pan buttons: the hand on the throttle always wins.
  */
 let slavedTo: { lat: number; lon: number } | null = null;
 const _slaveAt = new THREE.Vector3();
@@ -445,13 +490,14 @@ function aimCamCamera(): void {
     if (ground !== undefined) _slaveAt.y = ground;
     camCamera.up.copy(_camUp);
     camCamera.lookAt(_slaveAt);
-    // …and the lens tightened to the range, so it is drawn the same size
-    // whether it is near or far.
-    setCamFov(camFovNow(camera.position.distanceTo(_slaveAt)));
+    // The LENS IS LEFT ALONE: slaving swings the camera onto the mark and
+    // does nothing else, so whoever is on the throttle decides whether to
+    // go in closer.
+    setCamFov(camFovNow());
     camCamera.updateMatrixWorld();
     return;
   }
-  setCamFov(camFovNow(0));
+  setCamFov(camFovNow());
   const tilt = ((CAM_PITCH_DEG + camPanDown) * Math.PI) / 180;
   const swing = (camPanSide * Math.PI) / 180;
   if (!CAM_STABILISED) {
@@ -493,9 +539,24 @@ function sendCamFrame(now: number): void {
   showHoops(false);
   sizeMark(camCamera, MARK_SCREEN_CAM);   // its own size in this picture
 
+  // ── HOW BIG A SQUARE THERE IS ROOM FOR ────────────────────────────────
+  //
+  // The camera borrows the simulator's own canvas: it is drawn into a square
+  // in the corner of it and copied out again. So the square can only be as
+  // big as the canvas will hold — and the canvas is only as big as the
+  // WINDOW. Ask for 768 in a window that is 700 tall and the square runs off
+  // the top: the copy then takes rows the camera never drew, and they come
+  // out as a pale band across the picture.
+  //
+  // So the square is whatever fits, and the picture sent on is always the
+  // same size whatever that turns out to be — a small window costs detail,
+  // never a band.
   const dpr = renderer.getPixelRatio();
-  renderer.setViewport(0, 0, CAM_PX, CAM_PX);
-  renderer.setScissor(0, 0, CAM_PX, CAM_PX);
+  const buffer = renderer.domElement;
+  const room = Math.floor(Math.min(buffer.width, buffer.height) / dpr);
+  const box = Math.max(64, Math.min(CAM_PX, room));
+  renderer.setViewport(0, 0, box, box);
+  renderer.setScissor(0, 0, box, box);
   renderer.setScissorTest(true);
   renderer.render(scene, camCamera);
   showHoops(true);
@@ -503,10 +564,30 @@ function sendCamFrame(now: number): void {
   renderer.setScissorTest(false);
   renderer.setViewport(0, 0, window.innerWidth, window.innerHeight);
 
-  // The GL viewport counts from the bottom; the canvas counts from the top.
-  const side = Math.round(CAM_PX * dpr);
+  // ── TAKING THE PICTURE OFF THE CANVAS, AND THE EDGE THAT MUST NOT COME
+  // WITH IT ─────────────────────────────────────────────────────────────
+  //
+  // The camera is rendered into a square at the BOTTOM-LEFT of the window's
+  // own canvas and then copied out of it. The GL viewport counts from the
+  // bottom and a canvas counts from the top, so the square's top edge is
+  // `canvas height − side` — and that is where it can go wrong: the canvas
+  // is sized in whole DEVICE pixels while the viewport is given in CSS ones,
+  // so on a screen whose ratio is not a round number the two disagree by up
+  // to a pixel. Copy from exactly that line and the first row can come from
+  // ABOVE the square, which is the simulator's own view: a bright line
+  // straight across the top of the camera picture.
+  //
+  // So the copy is taken a couple of device pixels INSIDE the square on
+  // every side and stretched back out. Two pixels of 768 is nothing to the
+  // eye, and no rounding anywhere can reach past them — the picture can only
+  // ever be made of pixels the camera actually drew.
+  const side = Math.floor(box * dpr);
+  const inset = Math.min(CAM_EDGE_TRIM, Math.floor(side / 8));
+  const sy = Math.max(0, buffer.height - side) + inset;
+  const span = Math.max(1, Math.min(side - inset * 2, buffer.height - sy, buffer.width - inset));
+  camCaptureCtx.clearRect(0, 0, CAM_PX, CAM_PX);
   camCaptureCtx.drawImage(
-    renderer.domElement, 0, renderer.domElement.height - side, side, side,
+    buffer, inset, sy, span, span,
     0, 0, CAM_PX, CAM_PX,
   );
 
@@ -1189,16 +1270,40 @@ interface TargetPlan {
   after?: number; run?: number; left?: number;
   /** …or at a place of its own */
   at?: { lat: number; lon: number };
+  /** CAN THE WEAPON TAKE IT OUT? Left out, yes, and the mark then has three
+   *  faces: its own, _selected while it is picked out, and _after once it has
+   *  been struck. `strike: false` says it has only the first two — there is no
+   *  _after file for it, nothing in the world to destroy, and a release on the
+   *  launcher leaves it standing where it is. */
+  strike?: boolean;
 }
 
 const TARGETS: TargetPlan[] = [
   // The launcher's mark, on the very spot the model stands on in the
   // simulator — it takes its place from MODEL_AT, so moving the model moves
   // the mark with it and the two can never drift apart. Press it on the map
-  // and it puts on truck_icon_selected.png; press it again and it takes it
+  // and it puts on BN222_icon_selected.png; press it again and it takes it
   // off. The triangles are not put on the map any more, but the machinery is
   // untouched: a line here brings one back.
-  { file: 'truck_icon', kind: 'truck', at: MODEL_AT },
+  //
+  // THE FILE'S NAME IS THE TARGET'S NAME. BN222 is what the map draws, what
+  // the targets screens call it and what the foes list calls it, so pressing
+  // it anywhere picks it out everywhere — see the lists in demo/map.ts.
+  { file: 'BN222_icon', kind: 'truck', at: MODEL_AT },
+  // TR383 — a mark and nothing else: there is no model of it in the simulator
+  // and the weapon cannot take it out, so it has the two faces its files give
+  // it and no struck one, which is what `strike: false` says. It is pressed,
+  // ringed in the lists and slaved to the camera exactly as BN222 is.
+  //
+  // THE LAUNCHER MUST STAY FIRST in this list: the pink envelope's line is
+  // drawn to the truck that can be struck, and that is BN222.
+  { file: 'TR383_icon', kind: 'truck', strike: false,
+    at: { lat: 33.59420871103045, lon: 35.70155672555636 } },
+  // GE867 — the same again: two faces, no model, nothing for the weapon to
+  // take out. It stands south of the launcher, the other side of it from
+  // TR383.
+  { file: 'GE867_icon', kind: 'truck', strike: false,
+    at: { lat: 33.550926602628394, lon: 35.69945979402824 } },
 ];
 
 /**
@@ -1326,7 +1431,7 @@ const CUES: CuePlan[] = [
   //         lead = -run lights them at the waypoint however far up the
   //         screen they have been put.
   //   left  out to the side; minus is to the RIGHT of the line.
-  { set: '', after: 3, run: 8_000, lead: -8_000, left: -6_500,
+  { set: '', after: 2, run: 8_000, lead: -8_000, left: -6_500,
     searching: 10, tracking: 10, launch: 15 },
 ];
 
@@ -1366,7 +1471,7 @@ function cueMarks(): NonNullable<MapFix['cues']> {
 function targetMarks(): NonNullable<MapFix['targets']> {
   return TARGETS.map((t) => {
     const at = t.at ?? besideRoute(t.after ?? 1, t.run ?? 0, t.left ?? 0);
-    return { id: t.file, lat: at.lat, lon: at.lon, kind: t.kind };
+    return { id: t.file, lat: at.lat, lon: at.lon, kind: t.kind, strike: t.strike };
   });
 }
 
@@ -1550,6 +1655,7 @@ const justPressed = new Set<string>();
 
 function keyDown(code: string): void {
   if (!started) return;
+  if (code === WEAPON_KEY && !keys.has(code)) pullTrigger();
   if (!keys.has(code)) justPressed.add(code);
   keys.add(code);
 }
