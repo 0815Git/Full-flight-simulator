@@ -24,7 +24,7 @@ import { Terrain, ZOOM_LEVELS, type WorldConfig, worldFromLatLon } from '../src'
 import { FM, SPEED_RULE, applyStick, speedRuleTrimThrottle, stepDynamics } from './flight';
 import {
   MAP_CHANNEL, type MapFix, type CamFrame, type SlaveOrder, type FireOrder,
-  type CamKeyOrder,
+  type CamKeyOrder, type PauseOrder,
   TRAIL_EVERY, openMapWindow,
 } from './mapLink';
 
@@ -695,9 +695,39 @@ const mapChannel = new BroadcastChannel(MAP_CHANNEL);
 // The one thing the map sends BACK: the spot the belly camera is to hold, or
 // null to let it go. Everything else on this channel runs the other way.
 mapChannel.addEventListener('message', (e: MessageEvent) => {
-  const m = e.data as SlaveOrder;
-  if (m && m.kind === 'slave') setSlave(m.at ?? null);
+  const m = e.data as SlaveOrder | PauseOrder;
+  if (!m) return;
+  if (m.kind === 'slave') setSlave((m as SlaveOrder).at ?? null);
+  else if (m.kind === 'pause') setPaused((m as PauseOrder).on, false);
 });
+
+/**
+ * ══ HOLD ════════════════════════════════════════════════════════════════════
+ *
+ * Esc here, or the clock on the map's top panel, and the flight stops where
+ * it is: the aircraft hangs, the physics is not stepped, the fuel stops
+ * burning. Esc again and it goes on from exactly there.
+ *
+ * NOTHING IS WOUND BACK. The clocks that run on the wall — the fuel's, and
+ * the threats' on the map — are not stopped but SHIFTED: when the hold ends,
+ * however long it lasted is added to where each of them started, so they
+ * carry on where they were rather than jumping forward by the length of the
+ * hold.
+ */
+let paused = false;
+let heldAt = 0;
+
+function setPaused(on: boolean, tell = true): void {
+  if (on === paused) return;
+  paused = on;
+  if (on) {
+    heldAt = performance.now();
+  } else {
+    const held = performance.now() - heldAt;
+    fuelStartedAt += held;                  // the fuel did not burn while held
+  }
+  if (tell) mapChannel.postMessage({ kind: 'pause', on } satisfies PauseOrder);
+}
 let mapFixTimer = 0;
 /** Counts fixes, so the flown path rides along on every TRAIL_EVERY-th one. */
 let mapFixCount = 0;
@@ -1655,6 +1685,7 @@ const justPressed = new Set<string>();
 
 function keyDown(code: string): void {
   if (!started) return;
+  if (code === 'Escape' && !keys.has(code)) setPaused(!paused);
   if (code === WEAPON_KEY && !keys.has(code)) pullTrigger();
   if (!keys.has(code)) justPressed.add(code);
   keys.add(code);
@@ -2232,7 +2263,7 @@ function frame(now: number): void {
   const dt = Math.min((now - last) / 1000, 0.1);
   last = now;
 
-  if (started) {
+  if (started && !paused) {
     // R (any layout — it's the physical key) or a post-crash tap puts the
     // aircraft back on the start point; it never returns to the login screen.
     if (justPressed.has('KeyR') || tapReset) resetRun();
@@ -2271,7 +2302,7 @@ function frame(now: number): void {
 
   justPressed.clear();
   tapReset = false;
-  if (started) {
+  if (started && !paused) {
     panCamera(dt);
     zoomCamera(dt);
     watchTrigger();

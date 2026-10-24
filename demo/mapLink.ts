@@ -162,9 +162,24 @@ export interface CamKeyOrder {
   what: 'slave' | 'reset';
 }
 
+/**
+ * HOLD EVERYTHING, OR LET IT GO ON.
+ *
+ * Either window can call for it — the clock on the map's top panel, or Esc
+ * in either one — and both obey: the simulator stops flying and the map
+ * stops its clocks, so a threat that is half way through its sequence stays
+ * half way through it. Whoever calls it says so on the channel, and the
+ * other follows; neither answers back, so there is nothing to echo.
+ */
+export interface PauseOrder {
+  kind: 'pause';
+  on: boolean;
+}
+
 /** What arrives on the channel: a position fix, a camera frame, or an order
  *  passing between the two windows. */
-export type MapMessage = MapFix | CamFrame | SlaveOrder | FireOrder | CamKeyOrder;
+export type MapMessage =
+  MapFix | CamFrame | SlaveOrder | FireOrder | CamKeyOrder | PauseOrder;
 
 /** The window name of the map popup — reusing it focuses the same window. */
 const MAP_WINDOW = 'flightsim-map-window';

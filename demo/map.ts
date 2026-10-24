@@ -25,7 +25,9 @@
  * carried while it was being built are gone, leaving a clean map for the final
  * design to be laid over.
  */
-import { MAP_CHANNEL, type CamFrame, type MapFix, type MapMessage, type SlaveOrder } from './mapLink';
+import {
+  MAP_CHANNEL, type CamFrame, type MapFix, type MapMessage, type PauseOrder, type SlaveOrder,
+} from './mapLink';
 
 /*
  * THREE THINGS THAT HAVE TO EXIST BEFORE ANYTHING ELSE RUNS.
@@ -3112,7 +3114,53 @@ if (sparePane && sparePane !== tallPane) {
 updateTallColumn();
 // A press anywhere else puts the menus away, the way a menu should behave.
 document.addEventListener('click', () => closeOtherMenus());
-window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeOtherMenus(); });
+/**
+ * ══ HOLD ════════════════════════════════════════════════════════════════════
+ *
+ * Press the clock on the top panel, or Esc, and everything stops where it
+ * is: the simulator hangs the flight, and here the threats' clocks stop, so
+ * one that is half way through its sequence stays half way through it. Press
+ * again and both go on from exactly there.
+ *
+ * THE CLOCKS ARE SHIFTED, NOT STOPPED. Each threat remembers the moment it
+ * began, against the clock on the wall; when the hold ends, however long it
+ * lasted is added to that moment, so it carries on where it was instead of
+ * jumping forward by the length of the hold.
+ *
+ * Esc has a job already — it puts away an open menu — and that comes first:
+ * with a menu down, Esc closes it and nothing is held.
+ */
+let paused = false;
+let heldAt = 0;
+
+function setPausedHere(on: boolean, tell = true): void {
+  if (on === paused) return;
+  paused = on;
+  if (on) {
+    heldAt = performance.now();
+  } else {
+    const held = performance.now() - heldAt;
+    for (const cue of cues) if (cue.started) cue.started += held;
+  }
+  topPanelEl.classList.toggle('is-held', on);
+  document.getElementById('topClock')?.classList.toggle('is-held', on);
+  if (tell) channel.postMessage({ kind: 'pause', on } satisfies PauseOrder);
+  dirty = true;
+}
+
+/** The clock on the top panel is the button. */
+document.getElementById('topClock')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  setPausedHere(!paused);
+});
+
+window.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  // A menu that is down is what Esc is for; only with none down does it hold.
+  const open = document.querySelector('.paneMenu.is-open') || layoutMenu.classList.contains('is-open');
+  if (open) { closeOtherMenus(); setLayoutMenuOpen(false); return; }
+  setPausedHere(!paused);
+});
 
 /**
  * ══ THE DATA CONTROL, AND ITS THREE MODES ═══════════════════════════════════
@@ -3642,6 +3690,11 @@ channel.onmessage = (e: MessageEvent<MapMessage>) => {
     fireWeapon();
     return;
   }
+  // Held, or let go, from the other window.
+  if ('kind' in message && message.kind === 'pause') {
+    setPausedHere(message.on, false);
+    return;
+  }
   // A camera key on the throttle: b6 is the Slave key, b7 puts the camera
   // back to resting and lets any mark go.
   if ('kind' in message && message.kind === 'camkey') {
@@ -3947,10 +4000,20 @@ const EW_CY = 1202;
 const EW_RING_IN = 700;
 const EW_RING_OUT = 1050;
 const EW_RING_AT = 90;         // their N is drawn out to the RIGHT
-/** The little ring round the aircraft, and where ITS N was drawn. */
+/**
+ * The little ring round the aircraft. IT HAS A MIDDLE OF ITS OWN: it is not
+ * quite concentric with the bearing rings — the artwork puts it six pixels
+ * lower — so it is turned about its own middle rather than theirs, and the
+ * green marks are hung on it there. Measured off EW_move.png.
+ */
+const EW_SMALL_CX = 1144.4;
+const EW_SMALL_CY = 1208;
+const EW_SMALL_R = 165.5;      // where the ring's own line runs
+/** The dark disc the aircraft stands on, in the still picture. */
+const EW_DISC_R = 164;
 const EW_MARK_IN = 100;
 const EW_MARK_OUT = 260;
-const EW_MARK_AT = 31;
+const EW_MARK_AT = 30.2;       // its N, measured round from that middle
 /** The brightness a pixel of the turning layer needs before it counts as a
  *  mark rather than as the panel it was drawn on. */
 const EW_KEY_LOW = 45;
@@ -3989,10 +4052,11 @@ function ewReady(): boolean {
  *  empty space round it, and carried to where its N belongs. */
 function ewRose(
   g: CanvasRenderingContext2D, k: number, r0: number, r1: number, turn: number,
+  mx = EW_CX, my = EW_CY,
 ): void {
   if (!ewMoveCut) return;
-  const cx = EW_CX * k;
-  const cy = EW_CY * k;
+  const cx = mx * k;
+  const cy = my * k;
   g.save();
   g.beginPath();
   // Each circle is its own subpath: `arc` would otherwise draw a line from
@@ -4083,6 +4147,126 @@ function drawEwThreats(g: CanvasRenderingContext2D, k: number): void {
   }
 }
 
+/**
+ * THE GREEN MARKS, ON THE EW SCREEN TOO.
+ *
+ * The very same artwork the map wears round its own compass ring —
+ * green_icon.png and the eight lit files — hung here on the EW screen's
+ * little white ring instead. It lights the same way for the same reason: a
+ * threat that is up anywhere in its sequence burns the slice of the circle
+ * it lies in, measured from the nose, so the two screens always say the same
+ * thing about where it is.
+ *
+ * It is sized to the RING rather than to the aircraft: the circle drawn
+ * inside green_icon.png is laid on the ring's own circle, which is what
+ * makes the green read as a frame round the ring.
+ */
+function drawEwGreen(g: CanvasRenderingContext2D, k: number): void {
+  if (cssNumber('--ew-green-show', 1) === 0 || !ready(greenIcon)) return;
+  const alpha = Math.max(0, Math.min(1, cssNumber('--green-opacity', 100) / 100));
+  if (alpha <= 0) return;
+  const w = greenIcon.naturalWidth;
+  const h = greenIcon.naturalHeight;
+  // The circle inside the file: where its middle is and how far out it runs,
+  // in the picture's own pixels — the same three numbers the map uses.
+  const cxArt = (cssNumber('--green-anchor-x', 49.96) / 100) * w;
+  const cyArt = (cssNumber('--green-anchor-y', 49.98) / 100) * h;
+  const ownR = (cssNumber('--green-radius', 7.49) / 100) * w;
+  if (ownR <= 0 || !h) return;
+  // Big enough for that circle to lie on the EW screen's own ring.
+  const want = EW_SMALL_R * k * (cssNumber('--ew-green-fit', 100) / 100);
+  const kk = want / ownR;
+
+  // Which of the lit files belong on top: one for every threat that is up.
+  const lit: HTMLImageElement[] = [];
+  if (cssNumber('--green-glow-show', 1) !== 0) {
+    for (const cue of cues) {
+      if (!cuePhase(cue)) continue;
+      const img = greenGlow(greenSector(cue.lat, cue.lon));
+      if (ready(img) && !lit.includes(img)) lit.push(img);
+    }
+  }
+
+  g.save();
+  // On the ring's OWN middle, and nudged from there by the two knobs — the
+  // artwork can always want a hair one way or the other.
+  g.translate(
+    (EW_SMALL_CX + cssNumber('--ew-green-shift-x', 0)) * k,
+    (EW_SMALL_CY + cssNumber('--ew-green-shift-y', 0)) * k,
+  );
+  // Upright, as it is on the map: the marks belong to the aircraft's own
+  // nose, not to the compass, and the nose is up on both screens.
+  g.rotate((cssNumber('--green-turn', 0) * Math.PI) / 180);
+  const stamp = (img: HTMLImageElement): void => {
+    g.drawImage(img, -cxArt * kk, -cyArt * kk, img.naturalWidth * kk, img.naturalHeight * kk);
+  };
+  g.globalAlpha = alpha;
+  stamp(greenIcon);
+  g.globalAlpha = Math.max(0, Math.min(1, cssNumber('--green-glow-opacity', 100) / 100));
+  for (const img of lit) stamp(img);
+  g.restore();
+}
+
+/**
+ * THE AIRCRAFT'S OWN DISC, LAID BACK OVER THE GREEN.
+ *
+ * On the map the symbol is built in pieces and the green is simply laid down
+ * before them. Here the aircraft and its disc arrived inside the still
+ * picture, which has to go down first because the panel is in it too — so
+ * the disc is drawn again, through a round hole over the aircraft, after the
+ * green. The order the eye ends up with is the map's: green, disc, ring,
+ * aircraft.
+ *
+ * It costs nothing to draw twice: that part of the picture is solid.
+ */
+function ewDisc(g: CanvasRenderingContext2D, k: number, w: number): void {
+  const r = cssNumber('--ew-disc', EW_DISC_R) * k;
+  if (r <= 0 || !ready(ewBase)) return;
+  g.save();
+  g.beginPath();
+  g.arc(EW_SMALL_CX * k, EW_SMALL_CY * k, r, 0, Math.PI * 2);
+  g.clip();
+  g.drawImage(ewBase, 0, 0, w, w);
+  g.restore();
+}
+
+/**
+ * THE AIRCRAFT ITSELF, LAST OF ALL — as it is on the map.
+ *
+ * Its nose reaches further out than the ring does, so the ring would cross
+ * it. The map draws its jet after its ring for exactly this reason; here the
+ * jet arrived inside the still picture, so a picture of JUST THE JET is made
+ * once — every solid, light pixel of the still layer within reach of the
+ * aircraft, which is the jet and nothing else — and that is laid on last.
+ */
+let ewJetCut: HTMLCanvasElement | null = null;
+function ewJet(): HTMLCanvasElement | null {
+  if (ewJetCut) return ewJetCut;
+  if (!ready(ewBase)) return null;
+  const w = ewBase.naturalWidth;
+  const h = ewBase.naturalHeight;
+  const cut = document.createElement('canvas');
+  cut.width = w;
+  cut.height = h;
+  const g = cut.getContext('2d', { willReadFrequently: true });
+  if (!g) return null;
+  g.drawImage(ewBase, 0, 0);
+  const pic = g.getImageData(0, 0, w, h);
+  const d = pic.data;
+  const reach = cssNumber('--ew-jet', 230);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      const near = Math.hypot(x - EW_SMALL_CX, y - EW_SMALL_CY) <= reach;
+      const light = Math.max(d[i]!, d[i + 1]!, d[i + 2]!) > 150;
+      if (!near || !light) d[i + 3] = 0;
+    }
+  }
+  g.putImageData(pic, 0, 0);
+  ewJetCut = cut;
+  return cut;
+}
+
 /** Every EW screen on show, repainted. */
 function drawEw(): void {
   const views = Array.from(document.querySelectorAll<HTMLCanvasElement>('.ewView'))
@@ -4107,7 +4291,16 @@ function drawEw(): void {
     const k = w / EW_FILE;                 // drawn pixels per file pixel
     g.drawImage(ewBase, 0, 0, w, w);       // everything that stays
     ewRose(g, k, EW_RING_IN, EW_RING_OUT, ring);
-    ewRose(g, k, EW_MARK_IN, EW_MARK_OUT, mark);
+    // THE SAME ORDER THE MAP KEEPS for its own symbol: the green goes down
+    // first and the aircraft is built over it — its dark disc, then its
+    // ring, then the aircraft itself. So the green runs behind the whole
+    // symbol and is seen round it and between its ticks, exactly as it is
+    // on the map.
+    drawEwGreen(g, k);
+    ewDisc(g, k, w);
+    ewRose(g, k, EW_MARK_IN, EW_MARK_OUT, mark, EW_SMALL_CX, EW_SMALL_CY);
+    const jet = ewJet();                   // …and the aircraft last of all
+    if (jet) g.drawImage(jet, 0, 0, w, w);
     drawEwThreats(g, k);                   // and the threat, over the lot
   }
 }

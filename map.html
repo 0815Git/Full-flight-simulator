@@ -1024,6 +1024,30 @@
          range rings are the scale. The outer ring is this far off; the
          inner one, as the artwork says, is half of it. A threat further out
          than this is held on the outer ring rather than lost off the edge. */
+      /* The green marks round the aircraft on the EW screen: the same
+         artwork the map wears, hung on this screen's own little ring and
+         lighting the same way. 100% lays the green's circle exactly on the
+         ring; more opens it wider, less draws it in. Everything else about
+         them — how bright they are, how the slices light — is the --green-*
+         block further up, shared with the map. */
+      --ew-green-show: 1;
+      /* 100% lays the green's own circle exactly on the ring, which is how
+         it sits on the map — the ring then covers it and what is seen is
+         the green round and between the ticks. More opens it wider. */
+      --ew-green-fit: 110;
+      /* A hair one way or the other, in the artwork's own pixels (it is 2284
+         across). Plus is right and down. */
+      --ew-green-shift-x: 0;
+      --ew-green-shift-y: 0;
+      /* The aircraft's own dark disc, which is laid back over the green so
+         that the symbol is built on top of it — the same order the map
+         keeps. 164 is where the disc ends in the artwork. */
+      --ew-disc: 166;
+      /* How far from the ring's middle the aircraft itself is looked for,
+         so it can be laid on LAST — over the ring, as it is on the map. Its
+         nose reaches 208 in the artwork, further than the ring at 165.5. */
+      --ew-jet: 230;
+
       --ew-range: 5;           /* nautical miles at the outer ring. The one
                                   threat in the flight lights at 5.6 NM —
                                   10.3 km, 8 km ahead and 6.5 to the side —
@@ -1031,7 +1055,7 @@
                                   of the way out and closes from there. Make
                                   this number SMALLER to push it further
                                   out, bigger to bring it in. */
-      --ew-threat-size: 300;   /* how big a threat is drawn, in the
+      --ew-threat-size: 250;   /* how big a threat is drawn, in the
                                   artwork's own pixels (it is 2284 across) */
 
       --row-ring-colour: #FFFFFF;
@@ -1111,6 +1135,13 @@
       letter-spacing: var(--clock-tracking-px, 0);
     }
     #topClock.is-off { display: none; }
+    /* THE CLOCK IS THE HOLD KEY. It answers a press — and while everything
+       is held it breathes, so the screen says plainly that nothing is
+       running. --hold-blink 0s leaves it still. */
+    #topClock { pointer-events: auto; cursor: pointer; }
+    #topClock.is-held { animation: holdBlink var(--hold-blink, 1.6s) ease-in-out infinite; }
+    @keyframes holdBlink { 0%, 100% { opacity: 1; } 50% { opacity: var(--hold-dim, 0.35); } }
+    @media (prefers-reduced-motion: reduce) { #topClock.is-held { animation: none; opacity: var(--hold-dim, 0.35); } }
 
     /* The top panel: the width of the WINDOW, whatever shape it is, and the
        HEIGHT the design gives it — 128 of the frame's 1280, times the scale.
