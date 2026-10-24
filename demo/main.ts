@@ -1133,37 +1133,44 @@ const MARK_LIFT_M = 0;            // extra air between the roof and its foot
  * one or the other on their own.
  */
 const WRECK_ON = true;
-const WRECK_DARKEN = 0.17;        // 0 is burnt black, 1 is the truck untouched
+const WRECK_DARKEN = 0.12;        // 0 is burnt black, 1 is the truck untouched
 const WRECK_ROUGH = 0.95;         // the shine taken off it; 1 is dead matt
+/** AND HOW FAR IT IS THROWN ABOUT. The blast does not leave a thing sitting
+ *  square on its wheels: it is tipped over a little, dropped by the nose and
+ *  settled into the ground, which is what says BROKEN at a glance from the
+ *  air, where the charring alone would not. Degrees, and metres. */
+const WRECK_TILT_DEG = 6;         // tipped over to one side
+const WRECK_NOSE_DEG = -3.5;      // and down by the nose
+const WRECK_SINK_M = 0.6;         // how far it settles into the ground
 
 const FIRE_ON = true;
-const FIRE_BURST_S = 3;           // how long fire keeps breaking out of it
-const FIRE_PUFFS = 26;            // how many flames are in the air at once
-const FIRE_EVERY_S = 0.09;        // how often another breaks out
-const FIRE_LIFE_S = 1.8;          // how long one burns before it is spent
+const FIRE_BURST_S = 3.5;         // how long fire keeps breaking out of it
+const FIRE_PUFFS = 38;            // how many flames are in the air at once
+const FIRE_EVERY_S = 0.06;        // how often another breaks out
+const FIRE_LIFE_S = 2.1;          // how long one burns before it is spent
 const FIRE_FROM = 0.3;            // how high up the truck they break out
-const FIRE_SPREAD = 0.7;          // how far off its middle they break out
-const FIRE_RISE = 0.22;           // how far one climbs each second
-const FIRE_START = 1.4;           // how wide one is as it breaks out
-const FIRE_GROW = 1.3;            // and how much wider it gets each second
+const FIRE_SPREAD = 0.95;         // how far off its middle they break out
+const FIRE_RISE = 0.24;           // how far one climbs each second
+const FIRE_START = 2;             // how wide one is as it breaks out
+const FIRE_GROW = 1.8;            // and how much wider it gets each second
 const FIRE_OPACITY = 0.95;        // how fierce one is at its height
 const FIRE_HOT = 0xfff0b0;        // the colour it breaks out at
 const FIRE_MID = 0xff8a1e;        // what it turns to
 const FIRE_COOL = 0x6b1d04;       // and what it dies to
 
 const SMOKE_ON = true;
-const SMOKE_PUFFS = 56;           // how many are in the air at once
-const SMOKE_EVERY_S = 0.22;       // how often another leaves the wreck
-const SMOKE_LIFE_S = 12;          // how long one lasts before it is spent
-const SMOKE_FROM = 0.55;          // how high up the wreck they leave
-const SMOKE_SPREAD = 0.25;        // how far off its middle they leave
+const SMOKE_PUFFS = 80;           // how many are in the air at once
+const SMOKE_EVERY_S = 0.15;       // how often another leaves the wreck
+const SMOKE_LIFE_S = 11;          // how long one lasts before it is spent
+const SMOKE_FROM = 0.5;           // how high up the wreck they leave
+const SMOKE_SPREAD = 0.3;         // how far off its middle they leave
 const SMOKE_RISE = 0.45;          // how far one climbs each second
 const SMOKE_WIND = 0.18;          // how far the wind carries it each second
 const SMOKE_WIND_FROM = 250;      // and the bearing that wind comes FROM
-const SMOKE_START = 1.2;          // how wide one is as it leaves
-const SMOKE_GROW = 0.36;          // and how much wider it gets each second
-const SMOKE_GREY = 0.15;          // 0 is black smoke, 1 is white steam
-const SMOKE_OPACITY = 0.85;       // how solid one is at its thickest
+const SMOKE_START = 1.5;          // how wide one is as it leaves
+const SMOKE_GROW = 0.4;           // and how much wider it gets each second
+const SMOKE_GREY = 0.13;          // 0 is black smoke, 1 is white steam
+const SMOKE_OPACITY = 0.95;       // how solid one is at its thickest
 
 /** The model's own place in the world, and the group it hangs in. */
 let modelGroup: THREE.Group | null = null;
@@ -1195,12 +1202,17 @@ function loadModel(): void {
     thing.position.y -= box.min.y;
     modelHeight = box.max.y - box.min.y;      // as drawn, in metres
     group.add(thing);
+    modelBody = thing;
     addModelMark(group, box);
     scene.add(group);
     modelGroup = group;
     modelAt.copy(worldPoint(world, MODEL_AT.lat, MODEL_AT.lon, 0));
   });
 }
+
+/** The model itself inside its group — what the blast throws about, so that
+ *  the group, and the fire and smoke hanging on it, stay upright. */
+let modelBody: THREE.Object3D | null = null;
 
 /** How tall the model stands once it is drawn, in metres. The smoke is sized
  *  off this, so the plume suits the truck however big the truck is made. */
@@ -1263,7 +1275,8 @@ function updateModel(): void {
   // The ground is asked for again each frame, as it is for the hoops: the
   // first answer comes from a coarse tile, and the finer ground settles it.
   const ground = terrain.groundHeight(modelGroup.position);
-  if (ground !== undefined) modelGroup.position.y = ground + MODEL_LIFT_M;
+  const sunk = wrecked && WRECK_ON ? WRECK_SINK_M : 0;
+  if (ground !== undefined) modelGroup.position.y = ground + MODEL_LIFT_M - sunk;
   if (modelMark) {
     // Struck, the badge is gone for good: the wreck comes back, the sign on
     // its roof does not.
@@ -1305,6 +1318,12 @@ function burnTheModel(): void {
         ? mesh.material.map(burn)
         : burn(mesh.material);
     });
+  }
+  // Thrown over by the blast and settled into the ground. It is the BODY
+  // that is turned, not the group, so the plume still goes straight up.
+  if (WRECK_ON && modelBody) {
+    modelBody.rotation.z += (WRECK_TILT_DEG * Math.PI) / 180;
+    modelBody.rotation.x += (WRECK_NOSE_DEG * Math.PI) / 180;
   }
   if (FIRE_ON) lightTheFire();
   if (SMOKE_ON) lightTheSmoke();
