@@ -1466,15 +1466,12 @@ function tellSlave(at: { lat: number; lon: number } | null): void {
  * screen that knows which store was chosen and where the mark stands:
  *
  *   · the store that was blinking on the weapons screen stops — it has gone;
- *   · --fire-delay seconds later the burst is put over the mark, and the
- *     mark itself is taken off the map while it shows;
- *   · --boom-hold seconds after that the burst goes too.
+ *   · when the weapon lands, the mark is taken off the map for good.
  *
- * The burst is an animated GIF, which a canvas cannot play — drawn there it
- * would be one frozen frame — so it is an ordinary picture element laid over
- * the map and moved onto the mark's place on every frame. Its file is given
- * a fresh name each time it is shown, which is what makes it play from the
- * start rather than carrying on from wherever it had got to.
+ * THE BURST IS NOT A PICTURE ANY MORE, and it is not on this screen. It is
+ * fire in the WORLD, standing on the truck itself, so it is seen through the
+ * camera and from the pilot's own window alike — see THE FIRE in
+ * demo/main.ts. Nothing of it is drawn here.
  */
 /**
  * THE MARKS THAT HAVE BEEN DESTROYED, by id — told to the map by the
@@ -1491,7 +1488,7 @@ function noteStruck(ids: string[] | undefined): void {
     destroyed.add(id);
     picked.delete(id);
     // THE CAMERA IS LEFT WHERE IT IS. If it was slaved to this mark it stays
-    // slaved: the burst stands on that very spot for the next few seconds,
+    // slaved: the fire burns on that very spot for the next few seconds,
     // and letting go here would swing the camera off it at the one moment
     // there is something to see. The Slave key lets go when she does.
     dirty = true;
@@ -1501,60 +1498,12 @@ function noteStruck(ids: string[] | undefined): void {
 /**
  * THE TRIGGER, PULLED IN THE OTHER WINDOW — the map's whole share of it.
  *
- * The burst is not the map's business: it belongs to the camera screen, where
- * the truck is actually seen, and the simulator places it there. What the map
- * does on the trigger is let the store go: it is the screen that knows which
- * one was chosen.
+ * The burst is not the map's business: it burns in the world, where the truck
+ * stands, and the simulator sees to it. What the map does on the trigger is
+ * let the store go: it is the screen that knows which one was chosen.
  */
 function fireWeapon(): void {
   spendPickedWeapon();
-}
-
-/**
- * ══ THE BURST, ON THE CAMERA SCREEN ═════════════════════════════════════════
- *
- * An animated GIF, which a canvas cannot play — drawn there it would be one
- * frozen frame — so it is an ordinary picture element laid over the camera's
- * canvas. The simulator says where it belongs in the picture and how big,
- * both as shares of the frame, because only the simulator knows where the
- * lens is pointing; everything here is putting it on that spot. The camera
- * screen may be up in more than one pane at once, and each gets its own.
- *
- * The file is drawn on BLACK, so it is laid on in `screen`, where black
- * counts for nothing and only the fire shows — over a grey camera picture
- * that reads exactly as a burst should. --boom-blend `normal` pastes it as
- * it is, black square and all.
- */
-const BOOM_SRC = './simGig_gray.gif';   // it sits in public/, not in icons/
-let boomSpot: NonNullable<CamFrame['boom']> | null = null;
-let boomRun = 0;                        // bumped on each new burst, to replay it
-
-function noteCamBoom(spot: NonNullable<CamFrame['boom']> | undefined): void {
-  if (spot && !boomSpot) boomRun++;     // a new burst: play the file from the start
-  boomSpot = spot ?? null;
-  dressCamBoom();
-}
-
-function dressCamBoom(): void {
-  for (const pane of document.querySelectorAll<HTMLElement>('.camPane')) {
-    let el = pane.querySelector<HTMLImageElement>('.camBoom');
-    if (!boomSpot) { el?.classList.add('is-off'); continue; }
-    if (!el) {
-      el = document.createElement('img');
-      el.className = 'camBoom';
-      el.alt = '';
-      el.setAttribute('aria-hidden', 'true');
-      pane.appendChild(el);
-    }
-    const want = `${BOOM_SRC}?${boomRun}`;
-    if (!el.src.endsWith(`?${boomRun}`)) el.src = want;
-    // Shares of the frame, laid on as shares of the pane: the picture fills
-    // the pane, so the two are the same thing and nothing has to be measured.
-    el.style.left = `${boomSpot.x * 100}%`;
-    el.style.top = `${boomSpot.y * 100}%`;
-    el.style.width = `${boomSpot.w * 100}%`;
-    el.classList.remove('is-off');
-  }
 }
 
 /**
@@ -3807,7 +3756,6 @@ channel.onmessage = (e: MessageEvent<MapMessage>) => {
   // A picture from the camera under the aircraft travels on the same channel.
   if ('kind' in message && message.kind === 'cam') {
     noteCamFov(message.fov);
-    noteCamBoom(message.boom);
     takeCamFrame(message.image);
     return;
   }

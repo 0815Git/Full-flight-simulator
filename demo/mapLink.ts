@@ -108,12 +108,6 @@ export interface CamFrame {
   /** The lens it was taken through, in degrees. The map wears a quieter set
    *  of markings once this is tight — see --cam-zoom-fov in map.html. */
   fov?: number;
-  /** THE BURST, while one is standing: where it belongs IN THIS PICTURE and
-   *  how big, all as shares of the frame (0-1, x from the left, y from the
-   *  top). The simulator works it out because only the simulator knows where
-   *  the lens is pointing; the map lays the picture over the camera screen on
-   *  that spot. Left out, there is nothing to show. */
-  boom?: { x: number; y: number; w: number };
   /** The run it belongs to, so a stale frame from the last flight is dropped. */
   runId: number;
 }

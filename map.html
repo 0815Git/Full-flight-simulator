@@ -292,27 +292,12 @@
          at once, and when the weapon lands the launcher's mark is taken off
          the map — for good, not just for a moment.
 
-         THE BURST IS NOT ON THIS SCREEN. It belongs to the CAMERA screen,
-         where the truck is actually seen: simGig_gray.gif, laid over the
-         camera's picture on the very spot the truck stood on. The simulator
-         places it, because only it knows where the lens is pointing, and it
-         grows as you close in. The TIMES AND SIZES belong to the simulator
-         too — WEAPON_FLIGHT_S (10 s from the trigger to the strike),
-         BOOM_PLAYS (how many times the file plays through), BOOM_SIZE_M and
-         BOOM_MIN_SHARE / BOOM_MAX_SHARE (the smallest and largest share of
-         the picture it may fill), all at the top of demo/main.ts. The knobs
-         here are only how it is laid on. */
-      --boom-blend: multiply;  /* simGig_gray.gif is dark smoke drawn on a
-                                  WHITE ground, so it is laid on in
-                                  `multiply`, where white counts for nothing
-                                  and only the smoke darkens what is under
-                                  it. That is what keeps its square from
-                                  showing. `normal` pastes the file as it is,
-                                  white square and all. */
-      --boom-white: 1.04;      /* the file's white is 246, not 255, which
-                                  would leave a faint square behind. This
-                                  lifts it the last of the way to pure white
-                                  so nothing of the square is left. */
+         THE BURST IS NOT ON THIS SCREEN, and it is not a picture at all.
+         It is FIRE IN THE WORLD, standing on the truck itself, so it is seen
+         through the camera and from the pilot's window alike. Its times and
+         sizes are the simulator's — WEAPON_FLIGHT_S (10 s from the trigger
+         to the strike) and the FIRE_* and SMOKE_* knobs at THE WRECK in
+         demo/main.ts. There is nothing to set here. */
 
       /* ── THE COMPASS ROSE, compass.png ──────────────────────────────
          The rings and the bearings, drawn about the aircraft's own place on
@@ -1699,30 +1684,6 @@
       left: 50%; transform: translateX(-50%); z-index: 11;
       pointer-events: none;
     }
-    /* THE BURST, over the camera's picture: held by its middle on the spot
-       the simulator gives, sized as a share of the pane, never in the way of
-       a press. It goes OVER the camera's own markings, as the thing nearest
-       the eye.
-
-       simGig_gray.gif is drawn on WHITE rather than on nothing, so it is
-       blended with what is under it instead of being pasted over it: in
-       `multiply` white counts for nothing and only the smoke shows — see
-       --boom-blend and --boom-white.
-
-       `.sidePane img` stretches a picture to fill its pane, which is right
-       for the screen artwork and quite wrong for this: named with its tag
-       and its pane this rule outweighs that one, so the burst keeps the
-       shape of its own file. */
-    .camPane img.camBoom {
-      position: absolute; z-index: 6;
-      transform: translate(-50%, -50%);
-      width: auto; height: auto; object-fit: fill;
-      pointer-events: none;
-      filter: brightness(var(--boom-white, 1.04));
-      mix-blend-mode: var(--boom-blend, multiply);
-    }
-    .camPane img.camBoom.is-off { display: none; }
-
     /*
      * THE TARGETS LIST, AND SCROLLING IT.
      *
