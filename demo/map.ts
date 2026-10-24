@@ -41,6 +41,11 @@ import {
 
 /** Fixes arrive faster than the screen refreshes, so drawing is left to rAF. */
 let dirty = false;
+/** True while everything is held — see setPausedHere. Declared up here with
+ *  the rest of the state so that nothing can read it before it exists: the
+ *  threats' own clock asks for it, and that is read on the first message. */
+let paused = false;
+let heldAt = 0;
 /** The quieter set of camera markings, and which set is on screen now —
  *  see "THE MARKINGS, AND THE ZOOM" near the end of this file. */
 const CAM_OVERLAY_ZOOM: Record<string, string> = {
@@ -566,7 +571,7 @@ function updateCue(f: MapFix): void {
   // plan gives each cue, so the two can simply be compared.
   const along = alongRoute(points, f) * 111_320;
   for (const cue of cues) {
-    if (!cue.started && along >= cue.gate) cue.started = performance.now();
+    if (!cue.started && along >= cue.gate) cue.started = nowHeld();
   }
 }
 
@@ -590,17 +595,32 @@ function cueLength(cue: CueLive): number {
     + cueSpan(cue, 'tracking') + cueSpan(cue, 'launch');
 }
 
+/**
+ * THE CLOCK THE THREATS RUN ON, AND WHY IT IS NOT THE WALL'S.
+ *
+ * A threat knows the moment it began and reads the time to see which stretch
+ * it is in. While everything is held, that reading must not move — or the
+ * screen walks on through searching, tracking and launch with nothing else
+ * moving at all, and then jumps back to where it really was when the hold
+ * ends. So the hold STOPS this clock where it stands; when it ends, the
+ * moment each threat began is carried forward by however long the hold
+ * lasted, and it goes on from exactly the stretch it was in.
+ */
+function nowHeld(): number {
+  return paused ? heldAt : performance.now();
+}
+
 /** True while any cue still has something to show — the map redraws for them,
  *  so the rings change over on time whatever the aircraft is doing. */
 function cueRunning(): boolean {
-  const now = performance.now();
+  const now = nowHeld();
   return cues.some((c) => c.started && now - c.started < cueLength(c) * 1000);
 }
 
 /** Which stretch a cue is in, and the picture that goes with it. */
 function cuePhase(cue: CueLive): { phase: CuePhase; image: HTMLImageElement } | null {
   if (!cue.started) return null;
-  const t = (performance.now() - cue.started) / 1000;
+  const t = (nowHeld() - cue.started) / 1000;
   const art = cueImages(cue.set);
   const spans: [number, CuePhase][] = [
     [cueSpan(cue, 'searching'), 'searching'],
@@ -3130,9 +3150,6 @@ document.addEventListener('click', () => closeOtherMenus());
  * Esc has a job already — it puts away an open menu — and that comes first:
  * with a menu down, Esc closes it and nothing is held.
  */
-let paused = false;
-let heldAt = 0;
-
 function setPausedHere(on: boolean, tell = true): void {
   if (on === paused) return;
   paused = on;
@@ -3143,7 +3160,6 @@ function setPausedHere(on: boolean, tell = true): void {
     for (const cue of cues) if (cue.started) cue.started += held;
   }
   topPanelEl.classList.toggle('is-held', on);
-  document.getElementById('topClock')?.classList.toggle('is-held', on);
   if (tell) channel.postMessage({ kind: 'pause', on } satisfies PauseOrder);
   dirty = true;
 }

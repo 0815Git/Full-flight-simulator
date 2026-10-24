@@ -1135,13 +1135,10 @@
       letter-spacing: var(--clock-tracking-px, 0);
     }
     #topClock.is-off { display: none; }
-    /* THE CLOCK IS THE HOLD KEY. It answers a press — and while everything
-       is held it breathes, so the screen says plainly that nothing is
-       running. --hold-blink 0s leaves it still. */
+    /* THE CLOCK IS THE HOLD KEY: it answers a press, and that is all that
+       changes about it. It goes on reading as it always does, held or not —
+       nothing about it blinks or dims. */
     #topClock { pointer-events: auto; cursor: pointer; }
-    #topClock.is-held { animation: holdBlink var(--hold-blink, 1.6s) ease-in-out infinite; }
-    @keyframes holdBlink { 0%, 100% { opacity: 1; } 50% { opacity: var(--hold-dim, 0.35); } }
-    @media (prefers-reduced-motion: reduce) { #topClock.is-held { animation: none; opacity: var(--hold-dim, 0.35); } }
 
     /* The top panel: the width of the WINDOW, whatever shape it is, and the
        HEIGHT the design gives it — 128 of the frame's 1280, times the scale.
