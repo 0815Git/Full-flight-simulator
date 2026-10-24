@@ -469,8 +469,18 @@ function cueImages(set: string): Record<CuePhase, HTMLImageElement> {
   const had = cueArt.get(set);
   if (had) return had;
   const load = (name: string) => {
+    // NOT UNPACKED ON THE PAGE'S OWN THREAD. These are ninety-five million
+    // pixels each; unpacked the usual way the screen stops dead for a second
+    // or two while it happens, which is what came just before the first ring.
+    //
+    // So the picture is NOT given to this element at all. The element is only
+    // a name to file the working copy under; the file itself is fetched and
+    // shrunk away from the page, and the small copy is what is ever drawn.
+    // (If that fails, and only then, the picture is given to the element in
+    // the ordinary way as a last resort.)
     const img = new Image();
-    img.src = `./icons/${name}_icon_ring${set}.png`;
+    img.decoding = 'async';
+    smallFromFile(`./icons/${name}_icon_ring${set}.png`, img);
     return img;
   };
   const made = { searching: load('searching'), tracking: load('tracking'), launch: load('Launch') };
@@ -564,6 +574,11 @@ function updateCue(f: MapFix): void {
   if (f.runId !== cueRunId || !sameList) {
     cueRunId = f.runId;
     cues = plan.map((c) => ({ ...c, started: 0, sounded: null }));
+    // ASKED FOR THE MOMENT THE PLAN ARRIVES, which is long before the
+    // aircraft reaches the first gate: the pictures are fetched and shrunk
+    // while there is nothing else going on, so the ring comes up on a copy
+    // that is already waiting rather than stopping the screen to make one.
+    for (const cue of cues) cueImages(cue.set);
   }
   const points = f.route ?? [];
   if (points.length < 2) return;
@@ -653,33 +668,119 @@ function cuePhase(cue: CueLive): { phase: CuePhase; image: HTMLImageElement } | 
  * follow the tracking ones until they are given values.
  */
 /**
+ * A WORKING COPY OF EACH CUE PICTURE, AT A SIZE A SCREEN CAN USE.
+ *
+ * The artwork is 9594 by 9914 — ninety-five million pixels — and it is drawn
+ * about four hundred across. Handing the browser the whole of it on every
+ * frame costs some thirty milliseconds a frame, and the first frame of each
+ * new one costs the best part of a second while it is unpacked and handed to
+ * the card: that is the catch at every change of stretch, and the heaviness
+ * in between.
+ *
+ * So each picture is shrunk ONCE, as it arrives — while the map is still
+ * waiting for the simulator and nothing else is going on — and the small
+ * copy is what is drawn from then on. --cue-art-px is how big that copy is;
+ * it only has to beat the size the ring is drawn at, which is a few hundred
+ * pixels even on a large screen at twice the density.
+ */
+const cueSmalls = new Map<HTMLImageElement, CanvasImageSource>();
+const cueShrinking = new Set<HTMLImageElement>();
+
+/**
+ * The working copy, if it is ready — otherwise the picture itself, but ONLY
+ * where it was given one as a last resort. Nothing at all until then, which
+ * is right: drawing the big picture is what unpacks it, and unpacking it is
+ * the second of nothing this is all here to avoid. A cue simply waits a
+ * moment for its copy, which is far less than it waits for the file.
+ */
+function cueSmall(img: HTMLImageElement): CanvasImageSource | null {
+  return cueSmalls.get(img) ?? (ready(img) ? img : null);
+}
+
+/**
+ * THE COPY IS MADE FROM THE FILE ITSELF, NOT FROM THE PICTURE ON THE PAGE.
+ *
+ * Handing createImageBitmap a picture the page has already taken in means
+ * the page has to unpack it first, and unpacking ninety-five million pixels
+ * on its own thread is the second or two of nothing. Given the file instead
+ * — fetched and handed over as it came off the wire — the unpacking and the
+ * shrinking both happen away from the page, which goes on drawing as if
+ * nothing were happening, and simply starts using the copy when it arrives.
+ */
+function smallFromFile(url: string, key: HTMLImageElement): void {
+  if (cueSmalls.has(key) || cueShrinking.has(key)) return;
+  cueShrinking.add(key);
+  const px = Math.max(256, cssNumber('--cue-art-px', 2048));
+  fetch(url)
+    .then((r) => r.blob())
+    .then((blob) => createImageBitmap(blob, {
+      resizeWidth: px, resizeHeight: px, resizeQuality: 'high',
+    }))
+    .then((bitmap) => {
+      cueSmalls.set(key, bitmap);
+      cueShrinking.delete(key);
+      cueBadgeFrom(key, bitmap, bitmap.width, bitmap.height);
+      dirty = true;
+    })
+    .catch(() => {
+      cueShrinking.delete(key);
+      if (!key.src) key.src = url;              // the ordinary way, as a last resort
+    });
+}
+
+/**
  * THE SOLID PART OF A CUE'S PICTURE — the badge at its middle, and nothing
  * else — kept as a picture of its own so it can be laid back over the line.
  *
- * Made once for each of the three pictures and then held: every pixel that
- * the artwork draws SOLID is kept as it is, and everything see-through is
- * dropped. So what comes out is the badge's own shape, to the pixel, with
- * none of the ring or the area around it.
+ * It is cut from the WORKING COPY above, not from the file: that copy is a
+ * couple of thousand pixels across and already to hand, while reading the
+ * middle of the file itself means unpacking ninety-five million pixels first,
+ * and that is a second of nothing.
+ *
+ * ONLY THE MIDDLE IS CUT. The badge lives within CUE_BADGE_SHARE of the
+ * middle, so that little square is the only part taken.
+ *
+ * Where it belongs is kept as a SHARE of the picture — a number between
+ * nought and one — and not in pixels, so it goes back in exactly the right
+ * place whatever size the copy happens to be and whatever size the ring is
+ * drawn at.
  */
-const cueBadges = new Map<HTMLImageElement, HTMLCanvasElement | null>();
-function cueBadge(img: HTMLImageElement): HTMLCanvasElement | null {
+const CUE_BADGE_SHARE = 500 / 9594;      // how far out from the middle it reaches
+interface CueBadge { art: HTMLCanvasElement; fx: number; fy: number; fw: number; fh: number }
+const cueBadges = new Map<HTMLImageElement, CueBadge | null>();
+
+/** Cut the badge out of `src`, and keep it against the picture it came from. */
+function cueBadgeFrom(key: HTMLImageElement, src: CanvasImageSource, w: number, h: number): void {
+  const reach = Math.max(1, Math.round(Math.min(w, h) * CUE_BADGE_SHARE));
+  const left = Math.max(0, Math.round(w / 2 - reach));
+  const top = Math.max(0, Math.round(h / 2 - reach));
+  const side = Math.max(1, Math.min(reach * 2, w - left, h - top));
+  const cut = document.createElement('canvas');
+  cut.width = side;
+  cut.height = side;
+  const g = cut.getContext('2d', { willReadFrequently: true });
+  if (!g) { cueBadges.set(key, null); return; }
+  g.drawImage(src, left, top, side, side, 0, 0, side, side);
+  const pic = g.getImageData(0, 0, side, side);
+  const d = pic.data;
+  for (let i = 3; i < d.length; i += 4) if (d[i]! < 200) d[i] = 0;
+  g.putImageData(pic, 0, 0);
+  cueBadges.set(key, { art: cut, fx: left / w, fy: top / h, fw: side / w, fh: side / h });
+}
+
+/**
+ * The badge, if there is one yet. Normally it was cut the moment the working
+ * copy arrived; if that never came — the file could not be fetched — it is
+ * cut from the picture on the page instead, once, as a last resort.
+ */
+function cueBadge(img: HTMLImageElement): CueBadge | null {
   const had = cueBadges.get(img);
   if (had !== undefined) return had;
   const w = img.naturalWidth;
   const h = img.naturalHeight;
   if (!w || !h) return null;                   // not loaded yet: ask again
-  const cut = document.createElement('canvas');
-  cut.width = w;
-  cut.height = h;
-  const g = cut.getContext('2d', { willReadFrequently: true });
-  if (!g) { cueBadges.set(img, null); return null; }
-  g.drawImage(img, 0, 0);
-  const pic = g.getImageData(0, 0, w, h);
-  const d = pic.data;
-  for (let i = 3; i < d.length; i += 4) if (d[i]! < 200) d[i] = 0;
-  g.putImageData(pic, 0, 0);
-  cueBadges.set(img, cut);
-  return cut;
+  cueBadgeFrom(img, img, w, h);
+  return cueBadges.get(img) ?? null;
 }
 
 function drawCueLine(from: { x: number; y: number }, phase: 'tracking' | 'launch'): void {
@@ -748,7 +849,8 @@ function drawCue(cx: number, cy: number, anchorY: number): void {
       cue.sounded = now.phase;
       playCueSound(now.phase);
     }
-    if (!ready(now.image)) continue;
+    const art = cueSmall(now.image);
+    if (!art) continue;
 
     // Each cue stands on its own spot of ground: the map carries it along as
     // it moves, the aircraft flies past it, and it never turns.
@@ -765,7 +867,7 @@ function drawCue(cx: number, cy: number, anchorY: number): void {
     // twice, and the artwork there is see-through: painted on itself it comes
     // out denser than the ring around it, which reads as a disc sitting under
     // the middle of the picture.
-    ctx.drawImage(now.image, p.x - size / 2, p.y - size / 2, size, size);
+    ctx.drawImage(art, p.x - size / 2, p.y - size / 2, size, size);
     if (now.phase === 'tracking' || now.phase === 'launch') {
       drawCueLine(p, now.phase);
       // …and the badge goes back on top of it, in its own shape. Cutting a
@@ -782,7 +884,15 @@ function drawCue(cx: number, cy: number, anchorY: number): void {
       // were, while the see-through ring and area — which would darken if
       // they were painted over themselves — are not touched.
       const badge = cueBadge(now.image);
-      if (badge) ctx.drawImage(badge, p.x - size / 2, p.y - size / 2, size, size);
+      if (badge) {
+        // Back in its own place: the big picture is drawn into a square of
+        // `size`, so the little one goes where its own corner falls in that.
+        ctx.drawImage(
+          badge.art,
+          p.x - size / 2 + badge.fx * size, p.y - size / 2 + badge.fy * size,
+          badge.fw * size, badge.fh * size,
+        );
+      }
     }
     ctx.restore();
   }
@@ -3768,7 +3878,9 @@ function frame(): void {
   // camera, the radar, and the request for the next frame, so the map simply
   // stopped. Now a bad frame costs that one screen, that once.
   try {
-    if (dirty) { dirty = false; draw(); }
+    if (dirty) { dirty = false;
+      draw();
+    }
   } catch (err) {
     console.error('map: draw failed this frame', err);
   }

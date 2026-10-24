@@ -483,6 +483,13 @@
       /* How big the rings are drawn. WHERE each cue stands, which set of
          pictures it uses and when it begins are in the CUES list in
          demo/main.ts — they belong to the flight, not to the look. */
+      /* HOW BIG A COPY OF EACH RING PICTURE IS KEPT TO DRAW FROM. The files
+         themselves are 9594 x 9914 — far more than any screen can show — and
+         drawn as they are they cost a tenth of a second at every change and
+         slow every frame in between. Each is shrunk once, as it arrives, and
+         this is the size of that copy: it only has to beat the size the ring
+         is drawn at. */
+      --cue-art-px: 2048;
       --cue-size: 700px;      /* the ring's width (the artwork is square) */
       --cue-opacity: 100%;
       /* THE SOUNDS, one per stretch, played the moment its ring comes up:
