@@ -371,6 +371,8 @@ function strikeTheModel(): void {
   if (modelGroup) modelGroup.visible = false;
   for (const t of TARGETS) if (t.kind === 'truck' && t.strike !== false) struckMarks.add(t.file);
   boomUntil = performance.now() + BOOM_HOLD_S * 1000;
+  // …and the wreck of it comes back up through the burst a few seconds in.
+  wreckDue = WRECK_ON ? performance.now() + WRECK_AFTER_S * 1000 : 0;
 }
 
 /** Called every frame: watch the trigger and say the word when it goes. */
@@ -725,6 +727,8 @@ function setPaused(on: boolean, tell = true): void {
   } else {
     const held = performance.now() - heldAt;
     fuelStartedAt += held;                  // the fuel did not burn while held
+    if (boomUntil) boomUntil += held;       // nor did the burst burn down
+    if (wreckDue) wreckDue += held;         // nor was the wreck any nearer
   }
   if (tell) mapChannel.postMessage({ kind: 'pause', on } satisfies PauseOrder);
 }
@@ -1134,6 +1138,48 @@ const MARK_RANGE_M = 10_000;      // first seen this far out
 const MARK_FADE_M = 500;          // and comes up over this much of it
 const MARK_LIFT_M = 0;            // extra air between the roof and its foot
 
+/**
+ * ══ THE WRECK, AND THE SMOKE OFF IT ═════════════════════════════════════════
+ *
+ * The weapon lands, the burst stands on the camera screen — and WRECK_AFTER_S
+ * seconds into that burst THE TRUCK COMES BACK, burnt. It is the very same
+ * model on the very same spot at the very same size: nothing is moved and
+ * nothing is swapped, only its materials are darkened, so it cannot drift or
+ * shrink. It never goes again — a struck truck stays struck, respawn or not —
+ * and the badge on its roof does NOT come back, since it is no longer a
+ * target.
+ *
+ * And smoke rises off it, and goes on rising for as long as the flight lasts.
+ * The smoke is a handful of PUFFS, each a soft round patch that leaves the
+ * wreck, climbs, leans away with the wind, swells and thins out to nothing;
+ * one leaves every SMOKE_EVERY_S and the spent ones are used again, so the
+ * plume renews itself for ever out of a fixed few.
+ *
+ * THE SIZES ARE SHARES OF THE TRUCK'S OWN HEIGHT, not metres — so the plume
+ * keeps its proportions whatever MODEL_SCALE is set to. 1 is the truck's
+ * full height; 0.5 is half of it.
+ *
+ * WRECK_ON false puts it back as it was: the truck simply vanishes.
+ */
+const WRECK_ON = true;
+const WRECK_AFTER_S = 4;          // seconds from the strike to the wreck
+const WRECK_DARKEN = 0.17;        // 0 is burnt black, 1 is the truck untouched
+const WRECK_ROUGH = 0.95;         // the shine taken off it; 1 is dead matt
+
+const SMOKE_ON = true;
+const SMOKE_PUFFS = 36;           // how many are in the air at once
+const SMOKE_EVERY_S = 0.25;       // how often another leaves the wreck
+const SMOKE_LIFE_S = 8;           // how long one lasts before it is spent
+const SMOKE_FROM = 0.55;          // how high up the wreck they leave
+const SMOKE_SPREAD = 0.22;        // how far off its middle they leave
+const SMOKE_RISE = 0.33;          // how far one climbs each second
+const SMOKE_WIND = 0.18;          // how far the wind carries it each second
+const SMOKE_WIND_FROM = 250;      // and the bearing that wind comes FROM
+const SMOKE_START = 0.8;          // how wide one is as it leaves
+const SMOKE_GROW = 0.35;          // and how much wider it gets each second
+const SMOKE_GREY = 0.15;          // 0 is black smoke, 1 is white steam
+const SMOKE_OPACITY = 0.8;        // how solid one is at its thickest
+
 /** The model's own place in the world, and the group it hangs in. */
 let modelGroup: THREE.Group | null = null;
 const modelAt = new THREE.Vector3();
@@ -1162,6 +1208,7 @@ function loadModel(): void {
     thing.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(thing);
     thing.position.y -= box.min.y;
+    modelHeight = box.max.y - box.min.y;      // as drawn, in metres
     group.add(thing);
     addModelMark(group, box);
     scene.add(group);
@@ -1169,6 +1216,10 @@ function loadModel(): void {
     modelAt.copy(worldPoint(world, MODEL_AT.lat, MODEL_AT.lon, 0));
   });
 }
+
+/** How tall the model stands once it is drawn, in metres. The smoke is sized
+ *  off this, so the plume suits the truck however big the truck is made. */
+let modelHeight = 0;
 
 /** The badge over the model: a sign standing on the middle of its roof. */
 let modelMark: THREE.Sprite | null = null;
@@ -1229,10 +1280,162 @@ function updateModel(): void {
   const ground = terrain.groundHeight(modelGroup.position);
   if (ground !== undefined) modelGroup.position.y = ground + MODEL_LIFT_M;
   if (modelMark) {
-    const fade = markFade();
+    // Struck, the badge is gone for good: the wreck comes back, the sign on
+    // its roof does not.
+    const fade = modelStruck ? 0 : markFade();
     modelMark.visible = fade > 0;
     modelMark.material.opacity = fade;
     sizeMark(camera, MARK_SCREEN_SIM);
+  }
+}
+
+
+/**
+ * ── THE WRECK ───────────────────────────────────────────────────────────────
+ *
+ * Burnt where it stands. Every material is COPIED before it is touched, so
+ * what is darkened belongs to this one model and nothing else in the world
+ * can be darkened with it; and because it is the same meshes in the same
+ * group, the thing cannot have moved, turned or changed size.
+ */
+let wrecked = false;
+/** When the wreck is due, by the wall clock; 0 while nothing is coming. */
+let wreckDue = 0;
+
+function burnTheModel(): void {
+  if (!modelGroup || wrecked) return;
+  const burn = (skin: THREE.Material): THREE.Material => {
+    const copy = skin.clone() as THREE.MeshStandardMaterial;
+    if (copy.color) copy.color.multiplyScalar(WRECK_DARKEN);
+    if (copy.emissive) copy.emissive.setScalar(0);
+    if (typeof copy.metalness === 'number') copy.metalness = 0;
+    if (typeof copy.roughness === 'number') copy.roughness = WRECK_ROUGH;
+    return copy;
+  };
+  modelGroup.traverse((thing) => {
+    const mesh = thing as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    mesh.material = Array.isArray(mesh.material)
+      ? mesh.material.map(burn)
+      : burn(mesh.material);
+  });
+  modelGroup.visible = true;
+  wrecked = true;
+  if (SMOKE_ON) lightTheSmoke();
+}
+
+/** Every frame: bring the wreck up when its moment comes. */
+function updateWreck(): void {
+  if (!WRECK_ON || wrecked || !wreckDue) return;
+  if (performance.now() >= wreckDue) burnTheModel();
+}
+
+/**
+ * ── THE SMOKE ───────────────────────────────────────────────────────────────
+ *
+ * One soft round patch, drawn once and used by every puff. It is built here
+ * rather than loaded, so there is no file to keep in step: a few overlapping
+ * clouds of white fading away to nothing, which each puff then turns to its
+ * own angle so no two look alike.
+ */
+function smokeArt(): THREE.Texture {
+  const side = 128;
+  const cut = document.createElement('canvas');
+  cut.width = side;
+  cut.height = side;
+  const g = cut.getContext('2d');
+  if (g) {
+    const blob = (x: number, y: number, r: number, strength: number): void => {
+      const paint = g.createRadialGradient(x, y, 0, x, y, r);
+      paint.addColorStop(0, `rgba(255,255,255,${strength})`);
+      paint.addColorStop(0.55, `rgba(255,255,255,${strength * 0.45})`);
+      paint.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = paint;
+      g.beginPath();
+      g.arc(x, y, r, 0, Math.PI * 2);
+      g.fill();
+    };
+    const mid = side / 2;
+    blob(mid, mid, mid * 0.72, 0.85);
+    blob(mid * 0.72, mid * 0.85, mid * 0.42, 0.5);
+    blob(mid * 1.26, mid * 1.1, mid * 0.46, 0.5);
+    blob(mid * 1.1, mid * 0.7, mid * 0.34, 0.4);
+    blob(mid * 0.82, mid * 1.28, mid * 0.3, 0.35);
+  }
+  const art = new THREE.CanvasTexture(cut);
+  art.colorSpace = THREE.SRGBColorSpace;
+  return art;
+}
+
+/** One patch of smoke on its way up: how old it is, and where it set off. */
+interface Puff { sprite: THREE.Sprite; age: number; x: number; z: number }
+const puffs: Puff[] = [];
+/** Counts down to the next one leaving. */
+let smokeTimer = 0;
+
+/**
+ * The puffs are hung ON THE MODEL'S OWN GROUP, not in the scene: the world is
+ * shifted under the aircraft as it flies — see rebaseLargeWorld — and hung
+ * here they are carried along with the truck without a word, their positions
+ * being plain metres from the truck itself.
+ */
+function lightTheSmoke(): void {
+  if (!modelGroup || puffs.length) return;
+  const art = smokeArt();
+  for (let i = 0; i < SMOKE_PUFFS; i++) {
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: art,
+      color: new THREE.Color().setScalar(SMOKE_GREY),
+      transparent: true,
+      depthWrite: false,          // smoke does not hide what is behind it
+      opacity: 0,
+    }));
+    sprite.visible = false;
+    modelGroup.add(sprite);
+    // Spent to begin with, so the first frames of the fire send them off one
+    // after another rather than all at once.
+    puffs.push({ sprite, age: Number.POSITIVE_INFINITY, x: 0, z: 0 });
+  }
+}
+
+/**
+ * Every frame while the flight runs — and NOT while it is held, which is why
+ * it is called from inside the hold's own guard: the plume stops dead with
+ * everything else and carries on from where it stood.
+ */
+function updateSmoke(dt: number): void {
+  if (!puffs.length) return;
+  const h = Math.max(1, modelHeight);
+  // Where the wind blows TO, north being -z as it is everywhere here.
+  const to = ((SMOKE_WIND_FROM + 180) * Math.PI) / 180;
+  const windX = Math.sin(to) * SMOKE_WIND * h;
+  const windZ = -Math.cos(to) * SMOKE_WIND * h;
+  smokeTimer -= dt;
+  for (const puff of puffs) {
+    if (puff.age > SMOKE_LIFE_S) {
+      // Spent. It waits its turn, and the one whose turn it is sets off from
+      // the fire again — which is what keeps the plume going for ever on a
+      // fixed handful of patches.
+      if (smokeTimer > 0) { puff.sprite.visible = false; continue; }
+      smokeTimer = SMOKE_EVERY_S;
+      puff.age = 0;
+      puff.x = (Math.random() * 2 - 1) * SMOKE_SPREAD * h;
+      puff.z = (Math.random() * 2 - 1) * SMOKE_SPREAD * h;
+      puff.sprite.material.rotation = Math.random() * Math.PI * 2;
+    }
+    puff.age += dt;
+    const w = (SMOKE_START + SMOKE_GROW * puff.age) * h;
+    puff.sprite.scale.set(w, w, 1);
+    puff.sprite.position.set(
+      puff.x + windX * puff.age,
+      SMOKE_FROM * h + SMOKE_RISE * h * puff.age + w / 2,
+      puff.z + windZ * puff.age,
+    );
+    // Thickens as it leaves, thins away over the rest of its life.
+    const life = puff.age / SMOKE_LIFE_S;
+    const fade = Math.min(1, puff.age / (SMOKE_LIFE_S * 0.12)) * (1 - life) ** 1.5;
+    puff.sprite.material.opacity = SMOKE_OPACITY * fade;
+    puff.sprite.visible = fade > 0.01;
   }
 }
 
@@ -2306,6 +2509,8 @@ function frame(now: number): void {
     panCamera(dt);
     zoomCamera(dt);
     watchTrigger();
+    updateWreck();
+    updateSmoke(dt);
     sendCamFrame(performance.now());
   }
   updateHoops();
