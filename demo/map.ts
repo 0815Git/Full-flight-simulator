@@ -26,7 +26,8 @@
  * design to be laid over.
  */
 import {
-  MAP_CHANNEL, type CamFrame, type MapFix, type MapMessage, type PauseOrder, type SlaveOrder,
+  MAP_CHANNEL, type CamFrame, type MapFix, type MapMessage, type PauseOrder,
+  type ResetOrder, type SlaveOrder,
 } from './mapLink';
 
 /*
@@ -1592,7 +1593,13 @@ function drawTargets(f: MapFix, cx: number, cy: number, anchorY: number): void {
     const dead = strikeable && destroyed.has(mark.id);
     // A mark that can be pressed has two faces, and which one it wears is
     // whether it has been pressed. The pressed one is sized on its own.
+    //
+    // A STRUCK MARK CAN BE CHOSEN AGAIN, and be struck again — but it keeps
+    // its burnt face while it is chosen, since there is no second artwork
+    // for a wreck that has been picked out. What says it is chosen is a thin
+    // white ring round it, the same ring the lists put round their rows.
     const chosen = !dead && kind === 'truck' && picked.has(mark.id);
+    const ringed = dead && kind === 'truck' && picked.has(mark.id);
     const look = chosen ? targetLook('truck', true) : looks[kind];
     if (!look.show) continue;
     const face = dead ? `${mark.id}_after` : chosen ? `${mark.id}_selected` : mark.id;
@@ -1611,7 +1618,19 @@ function drawTargets(f: MapFix, cx: number, cy: number, anchorY: number): void {
     const y = p.y - height * look.ay;
     ctx.globalAlpha = look.alpha;
     ctx.drawImage(img, x, y, look.width, height);
-    if (kind === 'truck' && !dead) markBoxes.push({ id: mark.id, x, y, w: look.width, h: height });
+    if (ringed) {
+      // Never thinner than a pixel: on a small screen the knob's 1.5 design
+      // px comes out at a third of one, which draws as a grey hair or as
+      // nothing at all.
+      const edge = Math.max(1, cssNumber('--row-ring-width', 1.5) * uiScale());
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = edge;
+      ctx.strokeStyle = cssText('--row-ring-colour', '#FFFFFF').trim();
+      ctx.strokeRect(x - edge, y - edge, look.width + edge * 2, height + edge * 2);
+    }
+    // The box a press is read against. A struck mark keeps one: it can be
+    // chosen again, and struck again.
+    if (kind === 'truck') markBoxes.push({ id: mark.id, x, y, w: look.width, h: height });
   }
   ctx.restore();
 }
@@ -3223,6 +3242,46 @@ function setPausedHere(on: boolean, tell = true): void {
   dirty = true;
 }
 
+/**
+ * ══ START AGAIN ═════════════════════════════════════════════════════════════
+ *
+ * The key at the right-hand end of the top panel. One press and both windows
+ * go back to how they began, each putting its own house in order: the word is
+ * sent to the simulator, which puts the aircraft on its start point and the
+ * truck back on its wheels, whole and unburnt; and here —
+ *
+ *   · nothing is struck any more, so the marks come back with their own
+ *     faces and the envelope with them;
+ *   · nothing is chosen, nothing is slaved, the designation box goes;
+ *   · every store is back on its pylon;
+ *   · and the satellite picture is ASKED FOR AFRESH — every tile is dropped
+ *     and fetched again, so a patch that came down wrong comes down again.
+ *
+ * The flight's own track and the threat cues need no word here: the simulator
+ * counts a new run, and the map drops both the moment it sees the new number.
+ */
+function startAgain(): void {
+  channel.postMessage({ kind: 'reset' } satisfies ResetOrder);
+  destroyed.clear();
+  picked.clear();
+  spent.clear();
+  setSlaved(null);
+  clearTd();
+  tiles.clear();                            // the satellite picture, afresh
+  for (const pane of document.querySelectorAll<HTMLElement>('.weaponPane')) {
+    setWeaponPicked(pane, -1);
+    dressWeaponPane(pane);
+  }
+  dressRowRings();
+  setPausedHere(false);                     // never start again held
+  dirty = true;
+}
+
+document.getElementById('topReset')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  startAgain();
+});
+
 /** The clock on the top panel is the button. */
 document.getElementById('topClock')?.addEventListener('click', (e) => {
   e.stopPropagation();
@@ -3622,6 +3681,18 @@ function placeClock(): void {
   put('--clock-size', cssNumber('--clock-size', 22.6) * scale);
   put('--clock-line', cssNumber('--clock-line', 31.1) * scale);
   put('--clock-tracking', cssNumber('--clock-tracking', 0) * scale);
+
+  // …and the start-again key at the other end of the same bar, measured the
+  // same way: sideways against the panel's width, down against the scale.
+  const key = document.getElementById('topReset');
+  if (!key) return;
+  const keyOff = cssNumber('--reset-key-show', 1) === 0;
+  key.classList.toggle('is-off', keyOff);
+  if (keyOff) return;
+  put('--reset-key-x', cssNumber('--reset-key-x', 2213.4) * across);
+  put('--reset-key-w', cssNumber('--reset-key-w', 80.6) * across);
+  put('--reset-key-y', cssNumber('--reset-key-y', 2) * scale);
+  put('--reset-key-h', cssNumber('--reset-key-h', 124) * scale);
 }
 
 /** The time itself, written into the three lines. */

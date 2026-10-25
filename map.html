@@ -87,6 +87,23 @@
       --clock-patch-y: 16.8px;      /* …and from its top */
       --clock-patch-h: 94px;
 
+      /* ── THE KEY AT THE RIGHT-HAND END OF THE PANEL ──────────────────
+         The last box on the bar is START AGAIN: one press puts the whole
+         thing back to how it began — the aircraft on its start point, the
+         truck whole on its wheels, every store back on the pylons, the
+         satellite picture asked for afresh.
+
+         It is the artwork's own box, so nothing is drawn over it: these
+         are only where the press is answered, measured off Top Panel.png
+         (6864 px of artwork across the design's 2296) and written in
+         design px like every other knob here. --reset-key-show 0 turns the
+         key off altogether. */
+      --reset-key-show: 1;
+      --reset-key-x: 2213.4px;      /* from the panel's left edge */
+      --reset-key-w: 80.6px;
+      --reset-key-y: 2px;           /* …and from its top */
+      --reset-key-h: 124px;
+
       /* THE TOP PANEL's height, in design px. It spans the whole window
          however wide that is, but its height is held to the design's 128 of
          the frame's 1280 — so the screen under it always has the design's own
@@ -1132,6 +1149,20 @@
        nothing about it blinks or dims. */
     #topClock { pointer-events: auto; cursor: pointer; }
 
+    /* THE START-AGAIN KEY: the artwork's own box, answering a press. Nothing
+       is drawn over it — it is a pane of clear glass laid on the picture — so
+       the panel reads exactly as it always has. */
+    #topReset {
+      position: absolute;
+      left: var(--reset-key-x-px, 0);
+      top: var(--reset-key-y-px, 0);
+      width: var(--reset-key-w-px, 0);
+      height: var(--reset-key-h-px, 0);
+      background: none; border: 0; padding: 0;
+      cursor: pointer;
+    }
+    #topReset.is-off { display: none; }
+
     /* The top panel: the width of the WINDOW, whatever shape it is, and the
        HEIGHT the design gives it — 128 of the frame's 1280, times the scale.
        Holding the height (rather than letting the artwork's own 6864 x 384
@@ -1788,6 +1819,8 @@
     <div id="topClock" aria-hidden="true">
       <span id="clockH">23</span><span id="clockM">25</span><span id="clockS">29</span>
     </div>
+    <!-- The last box on the bar: one press and everything starts again. -->
+    <button id="topReset" type="button" title="Start again" aria-label="Start again"></button>
   </div>
   <div id="screen">
     <!-- The two screens on the left of the map. Each is a SLOT: what it shows

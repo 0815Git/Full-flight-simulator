@@ -170,10 +170,21 @@ export interface PauseOrder {
   on: boolean;
 }
 
+/**
+ * START AGAIN — sent by the map when the key at the right of the top panel is
+ * pressed. Each window puts its own house in order: the map drops what it has
+ * been keeping (what was struck, what was chosen, which stores have gone) and
+ * asks for the satellite picture afresh; the simulator puts the aircraft back
+ * on the start point and the truck back on its wheels, whole and unburnt.
+ */
+export interface ResetOrder {
+  kind: 'reset';
+}
+
 /** What arrives on the channel: a position fix, a camera frame, or an order
  *  passing between the two windows. */
 export type MapMessage =
-  MapFix | CamFrame | SlaveOrder | FireOrder | CamKeyOrder | PauseOrder;
+  MapFix | CamFrame | SlaveOrder | FireOrder | CamKeyOrder | PauseOrder | ResetOrder;
 
 /** The window name of the map popup — reusing it focuses the same window. */
 const MAP_WINDOW = 'flightsim-map-window';

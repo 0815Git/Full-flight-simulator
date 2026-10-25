@@ -24,7 +24,7 @@ import { Terrain, ZOOM_LEVELS, type WorldConfig, worldFromLatLon } from '../src'
 import { FM, SPEED_RULE, applyStick, speedRuleTrimThrottle, stepDynamics } from './flight';
 import {
   MAP_CHANNEL, type MapFix, type CamFrame, type SlaveOrder, type FireOrder,
-  type CamKeyOrder, type PauseOrder,
+  type CamKeyOrder, type PauseOrder, type ResetOrder,
   TRAIL_EVERY, openMapWindow,
 } from './mapLink';
 
@@ -352,7 +352,8 @@ const struckMarks = new Set<string>();
 function strikeTheModel(): void {
   modelStruck = true;
   for (const t of TARGETS) if (t.kind === 'truck' && t.strike !== false) struckMarks.add(t.file);
-  burnTheModel();
+  if (!wrecked) burnTheModel();
+  else if (FIRE_ON) lightTheFire();        // struck again: fire, and nothing else
 }
 
 /** Called every frame: watch the trigger and say the word when it goes. */
@@ -371,10 +372,16 @@ function watchTrigger(): void {
   triggerWasDown = down;
 }
 
-/** The trigger has gone, whichever way it was pulled. */
+/**
+ * The trigger has gone, whichever way it was pulled.
+ *
+ * A TRUCK THAT HAS ALREADY BEEN STRUCK CAN BE STRUCK AGAIN. It is a wreck
+ * and it stays one — nothing is undone and it is not darkened twice — but the
+ * fire breaks over it afresh and the smoke goes on, so a second release is
+ * seen on the camera exactly as the first was.
+ */
 function pullTrigger(): void {
   mapChannel.postMessage({ kind: 'fire' } satisfies FireOrder);
-  if (modelStruck) return;                 // there is nothing left to hit
   window.clearTimeout(strikeTimer);
   strikeTimer = window.setTimeout(strikeTheModel, WEAPON_FLIGHT_S * 1000);
 }
@@ -656,10 +663,11 @@ const mapChannel = new BroadcastChannel(MAP_CHANNEL);
 // The one thing the map sends BACK: the spot the belly camera is to hold, or
 // null to let it go. Everything else on this channel runs the other way.
 mapChannel.addEventListener('message', (e: MessageEvent) => {
-  const m = e.data as SlaveOrder | PauseOrder;
+  const m = e.data as SlaveOrder | PauseOrder | ResetOrder;
   if (!m) return;
   if (m.kind === 'slave') setSlave((m as SlaveOrder).at ?? null);
   else if (m.kind === 'pause') setPaused((m as PauseOrder).on, false);
+  else if (m.kind === 'reset') startAgain();
 });
 
 /**
@@ -1298,6 +1306,8 @@ function updateModel(): void {
  * changed size.
  */
 let wrecked = false;
+/** What each mesh wore before the fire, so START AGAIN can give it back. */
+const beforeTheFire = new Map<THREE.Mesh, THREE.Material | THREE.Material[]>();
 
 function burnTheModel(): void {
   if (!modelGroup || wrecked) return;
@@ -1314,6 +1324,7 @@ function burnTheModel(): void {
     modelGroup.traverse((thing) => {
       const mesh = thing as THREE.Mesh;
       if (!mesh.isMesh) return;
+      if (!beforeTheFire.has(mesh)) beforeTheFire.set(mesh, mesh.material);
       mesh.material = Array.isArray(mesh.material)
         ? mesh.material.map(burn)
         : burn(mesh.material);
@@ -1510,6 +1521,52 @@ function updateSmoke(dt: number): void {
     puff.sprite.material.opacity = SMOKE_OPACITY * fade;
     puff.sprite.visible = fade > 0.01;
   }
+}
+
+/**
+ * ══ START AGAIN ═════════════════════════════════════════════════════════════
+ *
+ * The key at the right-hand end of the map's top panel, come across the
+ * channel. The flight begins again — aircraft on the start point, full tank,
+ * a fresh run for the map to count from — and the truck is a truck once more:
+ * the materials it wore before the fire are given back, it is set upright on
+ * its wheels and lifted out of the ground, the badge returns to its roof, and
+ * the fire and smoke are put out and taken away. A weapon in the air at that
+ * moment never lands.
+ *
+ * The map is told nothing in return: the next fix carries an empty list of
+ * struck marks and a new run number, which is all it needs.
+ */
+function startAgain(): void {
+  window.clearTimeout(strikeTimer);
+  modelStruck = false;
+  struckMarks.clear();
+  putOutTheFire();
+  if (wrecked) {
+    wrecked = false;
+    for (const [mesh, skin] of beforeTheFire) mesh.material = skin;
+    beforeTheFire.clear();
+    if (WRECK_ON && modelBody) {
+      modelBody.rotation.z -= (WRECK_TILT_DEG * Math.PI) / 180;
+      modelBody.rotation.x -= (WRECK_NOSE_DEG * Math.PI) / 180;
+    }
+  }
+  resetRun();
+}
+
+/** Take the flames and the plume out of the world altogether, so that a
+ *  truck that is struck again starts them afresh rather than carrying on. */
+function putOutTheFire(): void {
+  for (const pool of [flames, puffs]) {
+    for (const puff of pool) {
+      puff.sprite.removeFromParent();
+      puff.sprite.material.dispose();
+    }
+    pool.length = 0;
+  }
+  fireAge = 0;
+  fireTimer = 0;
+  smokeTimer = 0;
 }
 
 /** Out of the belly camera's picture: the hoops are for the pilot's eye, not
