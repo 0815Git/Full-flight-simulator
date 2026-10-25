@@ -424,6 +424,37 @@ export class Terrain {
     }
   }
 
+  /**
+   * ASK AGAIN FOR WHATEVER IS MISSING — the satellite picture, the heights
+   * and the normals of every tile that is WANTED but has neither arrived nor
+   * been asked for since.
+   *
+   * A tile whose fetch failed is dropped and waits for the next rebuild of
+   * the desired set, and that rebuild is gated on movement (see
+   * updateDesired): an aircraft that is sitting still, or flying a stretch
+   * that asks for nothing new, never asks again, and the patch of ground
+   * stays as the coarse parent underneath it — which is what a bad first
+   * load looks like from the air. Called every so often, this fills those
+   * holes in as the fetches come good.
+   *
+   * NOTHING THAT IS ALREADY THERE IS TOUCHED. Resident tiles are left exactly
+   * as they are and nothing is dropped, cancelled or rebuilt, so there is
+   * nothing to see: no flicker, no reload, and not a thing changed about
+   * where the aircraft is or what it is doing. Tiles already on their way are
+   * left alone too, so this cannot pile request on request.
+   *
+   * Returns how many were asked for — nought when nothing is missing.
+   */
+  retryMissing(): number {
+    let asked = 0;
+    for (const [id, key] of this.desired) {
+      if (this.resident.has(id) || this.loading.has(id)) continue;
+      this.requestTile(key);
+      asked++;
+    }
+    return asked;
+  }
+
   private requestTile(key: TileKey): void {
     const scale = 2 ** (key.zoom - this.world.baseZoom);
     this.source.request({

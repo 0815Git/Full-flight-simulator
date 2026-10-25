@@ -332,6 +332,26 @@ function tile(z: number, x: number, y: number): HTMLImageElement | null {
   return img;
 }
 
+/**
+ * ASK AGAIN FOR THE TILES THAT DID NOT COME DOWN.
+ *
+ * A tile whose fetch failed is remembered as null and never asked for again,
+ * so one busy moment at the start leaves a blank patch on the map for the
+ * rest of the flight. Every TILE_RETRY_S the nulls are simply forgotten:
+ * the next frame asks for those tiles afresh, and they fill in as they
+ * arrive.
+ *
+ * NOTHING THAT IS ALREADY THERE IS TOUCHED — a tile that came down stays
+ * exactly as it is — so there is nothing to see. A patch that was blank goes
+ * on being blank until its picture lands.
+ */
+const TILE_RETRY_S = 60;
+window.setInterval(() => {
+  let missing = 0;
+  for (const [key, img] of tiles) if (img === null) { tiles.delete(key); missing++; }
+  if (missing) dirty = true;
+}, TILE_RETRY_S * 1000);
+
 /** Is this image ready to be drawn? (A tile that errored is stored as null.) */
 const ready = (img: HTMLImageElement | null): img is HTMLImageElement => !!img && img.complete && img.naturalWidth > 0;
 

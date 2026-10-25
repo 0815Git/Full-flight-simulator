@@ -28,6 +28,21 @@ import {
   TRAIL_EVERY, openMapWindow,
 } from './mapLink';
 
+/**
+ * HOW OFTEN THE GROUND IS ASKED FOR AGAIN, in seconds.
+ *
+ * Tiles come down over the wire and some of them do not: a server that is
+ * busy, a moment without a connection, and that patch of ground is left as
+ * the blurred parent under it for the rest of the flight — worst of all at
+ * the very start, when every tile is asked for at once and the server is
+ * most likely to say no.
+ *
+ * So every so often whatever is missing is simply asked for again. It costs
+ * nothing when nothing is missing, it never touches a tile that is already
+ * there, and there is nothing to see: the ground only ever fills in.
+ */
+const TILE_RETRY_S = 60;
+
 /** Sky/fog color (raylib's SKYBLUE, for parity with the original demo). */
 const SKY = new THREE.Color().setRGB(70 / 255, 130 / 255, 190 / 255, THREE.SRGBColorSpace);
 /** User-space drift (meters) that triggers a large-world rebase. */
@@ -2592,6 +2607,9 @@ const _WORLD_UP = new THREE.Vector3(0, 1, 0);
 const PHYS_DT = 1 / 120; // fixed physics step — decoupled from the render rate
 let physAcc = 0;
 let last = performance.now();
+/** When the ground is next asked for again — see TILE_RETRY_S. */
+let tileRetryAt = 0;
+
 function frame(now: number): void {
   const dt = Math.min((now - last) / 1000, 0.1);
   last = now;
@@ -2625,6 +2643,14 @@ function frame(now: number): void {
     drawAttitude();
   }
   terrain.update();
+  // …and every TILE_RETRY_S, ask again for whatever has not come down. This
+  // runs on the wall clock, started or held alike: it is not part of the
+  // flight, it changes nothing in it, and the ground is as worth filling in
+  // while the thing is held as while it is flying.
+  if (now >= tileRetryAt) {
+    tileRetryAt = now + TILE_RETRY_S * 1000;
+    terrain.retryMissing();
+  }
   loadingUi();
   probeGamepads();
 
