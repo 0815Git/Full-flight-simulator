@@ -2234,8 +2234,12 @@ function drawAircraft(): void {
 }
 
 // -- zoom --------------------------------------------------------------------
-// No buttons on screen (the final design owns the chrome): the wheel and the
-// +/- keys are enough to check the map at another scale while building.
+// THE RANGE IS SET FROM THE SCREEN ITSELF — the + and − keys either side of
+// the range control, bottom right. The MOUSE WHEEL DOES NOT TOUCH IT: a roll
+// of the wheel anywhere in this window used to step the range, which meant
+// that scrolling a list, or simply resting the hand on the wheel over the
+// camera, moved the map out from under her. The +/- keys on the keyboard are
+// kept, as a way of checking the map at another scale while building.
 
 function setZoom(z: number): void {
   const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
@@ -2277,7 +2281,6 @@ function setZoomStep(next: number): void {
   if (!zoomBtn.src.endsWith(face.slice(1))) zoomBtn.src = face;
 }
 
-window.addEventListener('wheel', (e) => setZoomStep(zoomStep + (e.deltaY < 0 ? -1 : 1)), { passive: true });
 window.addEventListener('keydown', (e) => {
   if (e.key === '+' || e.key === '=') setZoomStep(zoomStep - 1);
   else if (e.key === '-' || e.key === '_') setZoomStep(zoomStep + 1);
