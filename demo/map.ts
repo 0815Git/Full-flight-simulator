@@ -1495,16 +1495,27 @@ function tellSlave(at: { lat: number; lon: number } | null): void {
  * demo/main.ts. Nothing of it is drawn here.
  */
 /**
- * THE MARKS THAT HAVE BEEN DESTROYED, by id — told to the map by the
- * simulator, which counts the weapon's flight time and takes the truck out of
- * the world. The map does not count anything of its own: it is handed the
- * list with every fix, so the mark leaves the map on the same frame the model
- * leaves the camera. An id here never comes back while the flight runs.
+ * THE MARKS THAT HAVE BEEN DESTROYED, by id.
+ *
+ * THIS IS NOT THE MAP'S OWN TALLY — it is a COPY of the simulator's, handed
+ * over with every fix. The simulator counts the weapon's flight time and
+ * burns the truck; the map is told which marks are struck and makes its set
+ * match, so a mark leaves the map on the same frame the model takes fire and
+ * comes back whole on the same frame the model does.
+ *
+ * Following the list rather than adding to it is what makes START AGAIN
+ * safe. The map lets go of everything the moment the key is pressed, but a
+ * fix sent a breath earlier — carrying the old list — can still land after
+ * that; if this only ever ADDED, that stale word would mark the truck struck
+ * for good and nothing would ever clear it again. Following the list, the
+ * next fix puts it right.
  */
 const destroyed = new Set<string>();
 
 function noteStruck(ids: string[] | undefined): void {
-  for (const id of ids ?? []) {
+  if (!ids) return;                       // nothing said: leave it as it is
+  const struck = new Set(ids);
+  for (const id of struck) {
     if (destroyed.has(id)) continue;
     destroyed.add(id);
     picked.delete(id);
@@ -1512,6 +1523,12 @@ function noteStruck(ids: string[] | undefined): void {
     // slaved: the fire burns on that very spot for the next few seconds,
     // and letting go here would swing the camera off it at the one moment
     // there is something to see. The Slave key lets go when she does.
+    dirty = true;
+  }
+  // …and a mark the simulator no longer counts as struck is whole again.
+  for (const id of destroyed) {
+    if (struck.has(id)) continue;
+    destroyed.delete(id);
     dirty = true;
   }
 }

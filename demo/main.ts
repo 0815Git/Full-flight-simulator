@@ -37,11 +37,29 @@ import {
  * the very start, when every tile is asked for at once and the server is
  * most likely to say no.
  *
- * So every so often whatever is missing is simply asked for again. It costs
- * nothing when nothing is missing, it never touches a tile that is already
- * there, and there is nothing to see: the ground only ever fills in.
+ * So every few seconds the simulator works out afresh what ground it wants
+ * and asks again for whatever has not come down. It costs nothing when nothing is
+ * missing, it never touches a tile that is already there, and there is
+ * nothing to see: the ground only ever fills in — while flying, while held,
+ * and after START AGAIN has put the aircraft back where it began.
  */
-const TILE_RETRY_S = 60;
+const TILE_CHECK_S = 3;
+/**
+ * …AND HOW LONG IT WAITS AFTER IT HAS ASKED FOR SOMETHING.
+ *
+ * LOOKING COSTS NOTHING — it is a walk down a few hundred names, and when
+ * the ground is whole there is nothing to do — so it is done every few
+ * seconds rather than once a minute. A minute sounds thrifty until you see
+ * what it means: a tile that fails a breath after one look sits there
+ * blurred for the whole of the next minute, which is exactly the patchy
+ * ground this is here to stop.
+ *
+ * ASKING is another matter. When a server is refusing, the tiles it refused
+ * would be asked for again on every look, which is how a busy server is
+ * turned into a hostile one. So after a look that found something, it holds
+ * off for this long before asking again.
+ */
+const TILE_RETRY_S = 10;
 
 /** Sky/fog color (raylib's SKYBLUE, for parity with the original demo). */
 const SKY = new THREE.Color().setRGB(70 / 255, 130 / 255, 190 / 255, THREE.SRGBColorSpace);
@@ -1567,6 +1585,12 @@ function startAgain(): void {
     }
   }
   resetRun();
+  // The aircraft is somewhere else now — the start point, which it may have
+  // left far behind — and the ground there was let go of as it flew away. Ask
+  // for it AT ONCE rather than on the next turn of the clock, so it is on its
+  // way before the first frame of the new run is drawn.
+  terrain.retryMissing();
+  tileRetryAt = performance.now() + TILE_RETRY_S * 1000;
 }
 
 /** Take the flames and the plume out of the world altogether, so that a
@@ -2648,8 +2672,10 @@ function frame(now: number): void {
   // flight, it changes nothing in it, and the ground is as worth filling in
   // while the thing is held as while it is flying.
   if (now >= tileRetryAt) {
-    tileRetryAt = now + TILE_RETRY_S * 1000;
-    terrain.retryMissing();
+    // A look costs nothing, so it is frequent; having ASKED for something,
+    // it holds off a little before asking again — see TILE_RETRY_S.
+    const asked = terrain.retryMissing();
+    tileRetryAt = now + (asked > 0 ? TILE_RETRY_S : TILE_CHECK_S) * 1000;
   }
   loadingUi();
   probeGamepads();

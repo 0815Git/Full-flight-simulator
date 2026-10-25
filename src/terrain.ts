@@ -397,10 +397,10 @@ export class Terrain {
    * loading keys that fell out of the set (once, here — the set only changes
    * in this method), and requests missing keys.
    */
-  private updateDesired(): void {
+  private updateDesired(force = false): void {
     const abs = this.absCamera();
     const ud = this.streaming.updateDistance;
-    if (abs.distanceToSquared(this.lastDesiredPos) <= ud * ud) return;
+    if (!force && abs.distanceToSquared(this.lastDesiredPos) <= ud * ud) return;
     this.lastDesiredPos.copy(abs);
 
     this.scratch.length = 0;
@@ -433,9 +433,12 @@ export class Terrain {
    * the desired set, and that rebuild is gated on movement (see
    * updateDesired): an aircraft that is sitting still, or flying a stretch
    * that asks for nothing new, never asks again, and the patch of ground
-   * stays as the coarse parent underneath it — which is what a bad first
-   * load looks like from the air. Called every so often, this fills those
-   * holes in as the fetches come good.
+   * stays as the coarse parent underneath it — blurred where it should be
+   * sharp, which is what a bad first load looks like from the air. Called
+   * every so often, this fills those holes in as the fetches come good.
+   *
+   * The desired set is REBUILT first, so this works while standing still as
+   * well as while flying.
    *
    * NOTHING THAT IS ALREADY THERE IS TOUCHED. Resident tiles are left exactly
    * as they are and nothing is dropped, cancelled or rebuilt, so there is
@@ -446,6 +449,12 @@ export class Terrain {
    * Returns how many were asked for — nought when nothing is missing.
    */
   retryMissing(): number {
+    // WORK OUT WHAT IS WANTED FIRST, whatever the aircraft has been doing.
+    // The rebuild above is gated on movement, so an aircraft standing still —
+    // held, or simply flying a stretch that asks for nothing new — is working
+    // off a list that was drawn up where it last moved. Rebuilt here, the
+    // list is right for where it is now before anything is asked for.
+    this.updateDesired(true);
     let asked = 0;
     for (const [id, key] of this.desired) {
       if (this.resident.has(id) || this.loading.has(id)) continue;
