@@ -181,10 +181,24 @@ export interface ResetOrder {
   kind: 'reset';
 }
 
+/**
+ * WHICH MARKS ARE CHOSEN — the map's word, sent whenever that changes.
+ *
+ * The choosing happens on the map: a press on a mark, or on its row in one of
+ * the lists. The simulator is told because the BADGE over the truck hangs on
+ * it — it is only up while the truck is chosen. See MARK_WHEN_CHOSEN in
+ * demo/main.ts.
+ */
+export interface PickOrder {
+  kind: 'pick';
+  /** Every mark chosen at this moment, by id; empty when none is. */
+  ids: string[];
+}
+
 /** What arrives on the channel: a position fix, a camera frame, or an order
  *  passing between the two windows. */
 export type MapMessage =
-  MapFix | CamFrame | SlaveOrder | FireOrder | CamKeyOrder | PauseOrder | ResetOrder;
+  MapFix | CamFrame | SlaveOrder | FireOrder | CamKeyOrder | PauseOrder | ResetOrder | PickOrder;
 
 /** The window name of the map popup — reusing it focuses the same window. */
 const MAP_WINDOW = 'flightsim-map-window';

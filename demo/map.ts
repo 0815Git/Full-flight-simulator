@@ -27,7 +27,7 @@
  */
 import {
   MAP_CHANNEL, type CamFrame, type MapFix, type MapMessage, type PauseOrder,
-  type ResetOrder, type SlaveOrder,
+  type PickOrder, type ResetOrder, type SlaveOrder,
 } from './mapLink';
 
 /*
@@ -1333,6 +1333,18 @@ function targetImage(id: string): HTMLImageElement {
  * first, so the one on top wins.
  */
 const picked = new Set<string>();
+
+/**
+ * THE SIMULATOR IS TOLD WHENEVER THAT CHANGES.
+ *
+ * The badge over the truck in the simulator's own window, and in the camera's
+ * picture, is only up while the truck is chosen — and the choosing is done
+ * here. So every press that changes this set says so, and the simulator has
+ * the word before the next frame it draws.
+ */
+function tellPicked(): void {
+  channel.postMessage({ kind: 'pick', ids: [...picked] } satisfies PickOrder);
+}
 interface MarkBox { id: string; x: number; y: number; w: number; h: number }
 let markBoxes: MarkBox[] = [];
 
@@ -1357,6 +1369,7 @@ canvas.addEventListener('click', (e) => {
   if (!picked.has(hit) && slavedId === hit) setSlaved(null);
   clearTd();                                // a mark was chosen instead
   dressRowRings();                          // and every list says so too
+  tellPicked();                             // and the simulator hears of it
   dirty = true;
 });
 
@@ -1515,16 +1528,18 @@ const destroyed = new Set<string>();
 function noteStruck(ids: string[] | undefined): void {
   if (!ids) return;                       // nothing said: leave it as it is
   const struck = new Set(ids);
+  let letGo = false;
   for (const id of struck) {
     if (destroyed.has(id)) continue;
     destroyed.add(id);
-    picked.delete(id);
+    if (picked.delete(id)) letGo = true;
     // THE CAMERA IS LEFT WHERE IT IS. If it was slaved to this mark it stays
     // slaved: the fire burns on that very spot for the next few seconds,
     // and letting go here would swing the camera off it at the one moment
     // there is something to see. The Slave key lets go when she does.
     dirty = true;
   }
+  if (letGo) tellPicked();                // a struck mark is no longer chosen
   // …and a mark the simulator no longer counts as struck is whole again.
   for (const id of destroyed) {
     if (struck.has(id)) continue;
@@ -2431,6 +2446,7 @@ function pressListRow(e: MouseEvent): boolean {
   if (picked.has(id)) picked.delete(id);
   else picked.add(id);
   dressRowRings();
+  tellPicked();
   dirty = true;                       // the map's own mark changes face too
   return true;
 }
@@ -3897,6 +3913,11 @@ channel.onmessage = (e: MessageEvent<MapMessage>) => {
   drawReadouts(next);
   dirty = true;
 };
+
+// A map window that has just opened says what it has chosen — nothing — so a
+// simulator left running from an older window lets go of anything it is still
+// badging.
+tellPicked();
 
 /** Shortest signed angle from `a` to `b` (rad). */
 function angleDelta(a: number, b: number): number {

@@ -24,7 +24,7 @@ import { Terrain, ZOOM_LEVELS, type WorldConfig, worldFromLatLon } from '../src'
 import { FM, SPEED_RULE, applyStick, speedRuleTrimThrottle, stepDynamics } from './flight';
 import {
   MAP_CHANNEL, type MapFix, type CamFrame, type SlaveOrder, type FireOrder,
-  type CamKeyOrder, type PauseOrder, type ResetOrder,
+  type CamKeyOrder, type PauseOrder, type ResetOrder, type PickOrder,
   TRAIL_EVERY, openMapWindow,
 } from './mapLink';
 
@@ -696,11 +696,12 @@ const mapChannel = new BroadcastChannel(MAP_CHANNEL);
 // The one thing the map sends BACK: the spot the belly camera is to hold, or
 // null to let it go. Everything else on this channel runs the other way.
 mapChannel.addEventListener('message', (e: MessageEvent) => {
-  const m = e.data as SlaveOrder | PauseOrder | ResetOrder;
+  const m = e.data as SlaveOrder | PauseOrder | ResetOrder | PickOrder;
   if (!m) return;
   if (m.kind === 'slave') setSlave((m as SlaveOrder).at ?? null);
   else if (m.kind === 'pause') setPaused((m as PauseOrder).on, false);
   else if (m.kind === 'reset') startAgain();
+  else if (m.kind === 'pick') notePicked((m as PickOrder).ids);
 });
 
 /**
@@ -1132,9 +1133,23 @@ const MODEL_SUN_FROM = { bearing: 140, height: 45 };
 const MODEL_MARK = './icons/Car%20Hozi.png';
 const MARK_SCREEN_SIM = 0.05;     // share of the simulator window's height
 const MARK_SCREEN_CAM = 0.12;     // share of the camera picture's height
-const MARK_RANGE_M = 10_000;      // first seen this far out
+const MARK_RANGE_M = 30_000;      // first seen this far out
 const MARK_FADE_M = 500;          // and comes up over this much of it
 const MARK_LIFT_M = 0;            // extra air between the roof and its foot
+/**
+ * AND ONLY WHILE THE TARGET IS CHOSEN.
+ *
+ * The badge is not a label on the landscape — it is the answer to a question
+ * asked: the mark is pressed on the map, or its row in one of the lists, and
+ * only then does the thing on the ground wear a sign. Let it go and the sign
+ * goes with it. Both pictures follow, the pilot's window and the camera's.
+ *
+ * The choosing is the MAP'S to do, and the map sends word whenever it
+ * changes, so with no map window open nothing is chosen and nothing is
+ * badged. Set this false to have the badge up whenever the truck is in range,
+ * chosen or not, as it was before.
+ */
+const MARK_WHEN_CHOSEN = true;
 
 /**
  * ══ THE WRECK: THE FIRE, AND THE SMOKE OFF IT ═══════════════════════════════
@@ -1212,6 +1227,24 @@ const SMOKE_START = 1.5;          // how wide one is as it leaves
 const SMOKE_GROW = 0.4;           // and how much wider it gets each second
 const SMOKE_GREY = 0.13;          // 0 is black smoke, 1 is white steam
 const SMOKE_OPACITY = 0.95;       // how solid one is at its thickest
+
+/**
+ * WHAT THE MAP HAS CHOSEN, by id. The map is the one that does the choosing —
+ * a press on a mark or on a row — and it sends the whole list every time it
+ * changes; this is simply a copy of it. START AGAIN empties it, as the map
+ * empties its own.
+ */
+const pickedMarks = new Set<string>();
+
+function notePicked(ids: string[]): void {
+  pickedMarks.clear();
+  for (const id of ids) pickedMarks.add(id);
+}
+
+/** Is the truck one of the marks chosen on the map? */
+function truckChosen(): boolean {
+  return TARGETS.some((t) => t.kind === 'truck' && pickedMarks.has(t.file));
+}
 
 /** The model's own place in the world, and the group it hangs in. */
 let modelGroup: THREE.Group | null = null;
@@ -1303,6 +1336,7 @@ function sizeMark(view: THREE.PerspectiveCamera, share: number): void {
  *  its range, coming up over the last stretch of it. */
 function markFade(): number {
   if (!modelGroup) return 0;
+  if (MARK_WHEN_CHOSEN && !truckChosen()) return 0;
   const d = camera.position.distanceTo(modelGroup.position);
   if (d >= MARK_RANGE_M) return 0;
   if (d <= MARK_RANGE_M - MARK_FADE_M) return 1;
@@ -1574,6 +1608,7 @@ function startAgain(): void {
   window.clearTimeout(strikeTimer);
   modelStruck = false;
   struckMarks.clear();
+  pickedMarks.clear();                     // the map lets go of its own too
   putOutTheFire();
   if (wrecked) {
     wrecked = false;
