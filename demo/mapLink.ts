@@ -30,6 +30,24 @@ export interface MapFix {
   fuelLb: number;
   /** True while the aircraft is sitting on a crash, so the map can say so. */
   crashed: boolean;
+  /**
+   * WHERE THE DRONE HAS GOT TO on its circle, and which way its nose points.
+   *
+   * The drone is flown in the SIMULATOR, round the truck at a height; the
+   * map only draws a mark for it. Sending its place with every fix is what
+   * keeps the mark and the aircraft one thing: press the mark, press Slave,
+   * and the camera swings onto the very drone that is drawn in the world.
+   * Left out — before the flight is started — the map flies a drone of its
+   * own on its --uav-* knobs, so the screen is never empty.
+   */
+  uav?: {
+    lat: number; lon: number; headingDeg: number;
+    /** HOW HIGH IT IS FLYING, in feet, over the ground the truck stands on —
+     *  not above the sea, as `altFt` above is. It is the height the drone
+     *  was given (UAV_ALT_M in demo/main.ts), and the figure the map writes
+     *  beside its mark, so the two can never disagree. */
+    heightFt?: number;
+  };
   /** Bumped by the simulator on every respawn (R), so the map drops its trail. */
   runId: number;
   /** THE ROUTE, in degrees: the line the aircraft is meant to fly, fixed in
@@ -105,6 +123,11 @@ export interface CamFrame {
   /** The picture itself. An ImageBitmap where the browser allows one to be
    *  sent, otherwise a JPEG data URL — the map draws either. */
   image: ImageBitmap | string;
+  /** WHICH CAMERA TOOK IT: the one under the aircraft, or the one under the
+   *  drone. Frames from both travel on the same channel, one after the other,
+   *  and each camera screen takes only the ones it is showing. Left out, the
+   *  one under the aircraft. */
+  from?: 'self' | 'lion';
   /** The lens it was taken through, in degrees. The map wears a quieter set
    *  of markings once this is tight — see --cam-zoom-fov in map.html. */
   fov?: number;
@@ -124,19 +147,35 @@ export interface SlaveOrder {
   kind: 'slave';
   /** The spot to hold, or null to let go. */
   at: { lat: number; lon: number } | null;
+  /**
+   * HOLD THE DRONE ITSELF rather than a spot on the ground.
+   *
+   * A spot does not move, and the drone does — a place sent now would be
+   * stale by the next frame. So the map does not send one: it says WHAT to
+   * hold, and the simulator, which flies the drone, keeps the lens on it
+   * frame by frame. `at` is null with this, and leaving both out lets go.
+   */
+  what?: 'uav';
 }
 
 /**
  * THE TRIGGER HAS BEEN PULLED.
  *
  * Sent by the simulator, where the stick is, to the map, which is the screen
- * that knows which store was chosen and where the mark stands. Nothing
- * travels with it: everything that happens next — taking the store off the
- * weapons screen, counting the flight time down, putting the burst over the
- * mark — happens on the map.
+ * that knows which store was chosen and where the mark stands. Taking the
+ * store off the weapons screen happens on the map; the burst is the
+ * simulator's own, since it burns in the world.
  */
 export interface FireOrder {
   kind: 'fire';
+  /**
+   * Seconds from this word to the strike — the simulator's own
+   * WEAPON_FLIGHT_S, sent so that the countdown on the weapons screen and
+   * the fire on the truck are two faces of ONE clock. Were the map to keep
+   * a time of its own, the two would drift apart the moment that knob was
+   * touched. Older words carry none; the map then counts its own default.
+   */
+  flight?: number;
 }
 
 /**
@@ -154,6 +193,29 @@ export interface FireOrder {
 export interface CamKeyOrder {
   kind: 'camkey';
   what: 'slave' | 'reset';
+}
+
+/**
+ * WHICH CAMERAS ARE BEING LOOKED AT.
+ *
+ * There are two: the one under the AIRCRAFT and the one under the DRONE that
+ * circles the target. EVERY camera screen chooses its own, so both may be on
+ * show at once — one screen on the aircraft, another on the drone — and the
+ * map sends the whole list of what its screens are asking for.
+ *
+ * The simulator renders exactly what is on that list and nothing else: with
+ * no camera screen open it renders neither, with one it renders one, and only
+ * with two screens on two different cameras does it pay for both.
+ *
+ * It is sent whenever the list changes, whenever a camera screen is built or
+ * the arrangement changes, and when the map starts — and again whenever the
+ * simulator begins a new run, since a simulator that has just been loaded has
+ * forgotten what it was told.
+ */
+export interface CamSourceOrder {
+  kind: 'camsource';
+  /** Every camera a screen is showing at this moment; empty when none is. */
+  want: ('self' | 'lion')[];
 }
 
 /**
@@ -195,10 +257,53 @@ export interface PickOrder {
   ids: string[];
 }
 
+/**
+ * THE TRIGGER PULLED FROM THE MAP'S WINDOW — Enter, pressed with the map in
+ * front rather than the simulator.
+ *
+ * It is the other way round from FireOrder, which is the simulator SAYING a
+ * weapon has gone. This one ASKS for one: the simulator answers it with
+ * pullTrigger, exactly as if the red trigger had been pulled, and the fire
+ * order then comes back over the channel like any other. So one key does the
+ * whole chain from either window, and there is still only one place where a
+ * weapon is let go.
+ */
+export interface TriggerOrder {
+  kind: 'trigger';
+}
+
+/**
+ * WHAT THE WEAPONS SCREEN IS SAYING, in the words the simulator's HUD prints.
+ *
+ * The choice of store is the MAP'S: it is made on the weapons screen, kept
+ * there, and handed on there. The simulator does not work any of it out — it
+ * is told, and it prints what it is told in the corner of the HUD, so the
+ * pilot looking straight ahead knows what is armed without turning to the map.
+ *
+ * ONE CLOCK, as everywhere else in this: the seconds come over ready written,
+ * from the same count that runs on the store itself, so the two screens can
+ * never read a second apart.
+ */
+export interface WeaponCueOrder {
+  kind: 'cue';
+  /** The store the designation box is standing on, written as the HUD writes
+   *  it — 'MK-84-S1', 'MK-82-S3', 'AA-S9' — or null when none is chosen.
+   *  The S number is the store's place in the aircraft's own order, counted
+   *  from 1: the top pair of 84s, the four 82s left to right, the bottom pair
+   *  of 84s, then the two AAs. */
+  store: string | null;
+  /** The seconds to the strike, mm:ss, while that store's weapon is in the
+   *  air — and null at every other moment. A store with a figure under it is
+   *  one that has gone: the HUD stops blinking its name and holds it steady
+   *  until the strike. */
+  clock: string | null;
+}
+
 /** What arrives on the channel: a position fix, a camera frame, or an order
  *  passing between the two windows. */
 export type MapMessage =
-  MapFix | CamFrame | SlaveOrder | FireOrder | CamKeyOrder | PauseOrder | ResetOrder | PickOrder;
+  MapFix | CamFrame | SlaveOrder | FireOrder | CamKeyOrder | PauseOrder | ResetOrder
+  | PickOrder | CamSourceOrder | TriggerOrder | WeaponCueOrder;
 
 /** The window name of the map popup — reusing it focuses the same window. */
 const MAP_WINDOW = 'flightsim-map-window';

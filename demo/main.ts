@@ -12,7 +12,7 @@
  * flight and follows it live — see mapLink.ts for the link between the two.
  *
  * Keyboard: **A/D** roll, **Z/C** yaw, **W/S** pitch, **+/-** throttle,
- * **M** reopen the moving map,
+ * **Enter** or **F** let a weapon go, **M** reopen the moving map,
  * **R** respawn at the start point, **E** continue: after a crash from the
  * crash spot, and in flight a free attitude recovery that keeps position and
  * speed. Touch: one-finger drag steers (right = bank right, down = nose up),
@@ -25,6 +25,7 @@ import { FM, SPEED_RULE, applyStick, speedRuleTrimThrottle, stepDynamics } from 
 import {
   MAP_CHANNEL, type MapFix, type CamFrame, type SlaveOrder, type FireOrder,
   type CamKeyOrder, type PauseOrder, type ResetOrder, type PickOrder,
+  type CamSourceOrder, type TriggerOrder, type WeaponCueOrder,
   TRAIL_EVERY, openMapWindow,
 } from './mapLink';
 
@@ -145,6 +146,22 @@ const altTapeEl = document.getElementById('altTape') as HTMLCanvasElement;
 const compassEl = document.getElementById('compass') as HTMLCanvasElement;
 const compassCtx = compassEl.getContext('2d')!;
 const popEl = document.getElementById('pop')!;
+// WHAT IS ARMED, along the bottom of the window: the store the weapons
+// screen is about, and the seconds under it once it has gone. Both are the MAP'S words — see
+// WeaponCueOrder — and this window only prints them. See index.html for why
+// the name breathes while the store is armed and holds still after.
+const storeCueEl = document.getElementById('storeCue')!;
+const storeCueNameEl = document.getElementById('storeCueName')!;
+const storeCueClockEl = document.getElementById('storeCueClock')!;
+
+/** Print what the weapons screen is about, or take the line away. */
+function showWeaponCue(store: string | null, clock: string | null): void {
+  storeCueNameEl.textContent = store ?? '';
+  storeCueClockEl.textContent = clock ?? '';
+  storeCueEl.classList.toggle('is-on', store !== null);
+  // A store with seconds under it is one that has gone: it holds still.
+  storeCueEl.classList.toggle('is-steady', clock !== null);
+}
 const attitudeEl = document.getElementById('attitude') as HTMLCanvasElement;
 const attitudeCtx = attitudeEl.getContext('2d')!;
 const loginEl = document.getElementById('login')!;
@@ -218,6 +235,71 @@ const CAM_PX = 768;          // the picture's size, square, in CSS px
  *  ratio; nothing but the camera's own pixels can get in past it. */
 const CAM_EDGE_TRIM = 2;
 const CAM_FPS = 15;          // frames a second sent to the map
+
+/**
+ * ── THE CAMERA THE DRONE CARRIES ───────────────────────────────────────────
+ *
+ * Under its belly, where a drone's sensor ball goes, is a second camera — a
+ * third eye on the same world, beside the pilot's view and the one under the
+ * aircraft. It STARES AT THE TARGET: wherever the drone is on its circle, the
+ * lens stays on the spot, so the picture turns slowly round the target as the
+ * drone goes round it. That is what a real sensor on a loiter does, and it is
+ * why the drone's picture reads differently from the aircraft's — the
+ * aircraft's view sweeps past, the drone's does not let go.
+ *
+ * WHICH SPOT. The mark the map has slaved, if one is slaved; otherwise the
+ * truck itself. So pressing Slave points both cameras at the same thing.
+ *
+ * WHICH OF THE TWO is shown is the map's choice — Self Video and Lion are
+ * two of the screens its menu offers — and only ONE is ever rendered, so the
+ * second camera costs nothing at all while it is not being looked at.
+ *
+ * Each camera keeps its own lens: zooming the drone's does not touch the
+ * aircraft's, and the key that puts the camera back to resting puts back
+ * whichever one is live.
+ */
+/**
+ * ITS LENS IS GIVEN AS GROUND, NOT AS DEGREES.
+ *
+ * This camera is pointed at ONE SPOT and held there, so what matters is how
+ * much GROUND fills the picture — not how wide the lens is. A lens of a
+ * fixed number of degrees shows a different patch of earth at every height,
+ * and the drone's height is a knob: raise it and the picture pulls away to
+ * nothing. So the PATCH is the knob instead, and the degrees are worked out
+ * from the distance to the spot, every frame. Fly the drone twice as high
+ * and the lens goes twice as tight by itself; the picture does not change.
+ *
+ * 246 m across is what the old fixed ten-degree lens came to from 2,400 ft
+ * at 1,200 m out — so what the screen shows is exactly what it always
+ * showed, now from 24,000 ft.
+ *
+ * Nothing in the cockpit zooms this one: the throttle's zoom belongs to the
+ * aircraft's own camera, and this lens answers only to the knob above it.
+ */
+const UAV_CAM_SPAN_M = 246;       // how much ground fills its picture, in metres
+const UAV_CAM_UNDER_M = 0.6;      // how far under the drone the lens sits
+
+/**
+ * ── AND THE GROUND UNDER IT, KEPT SHARP ────────────────────────────────────
+ *
+ * The satellite picture comes down around the AIRCRAFT: the nearer the ground
+ * is to it the finer the tiles, and forty kilometres out one tile the size of
+ * a town is stretched over the whole of it. That is right for what the pilot
+ * is flying over — and wrong for the drone, which is watching the target from
+ * a kilometre away while the aircraft is still at the start of the route. Its
+ * lens takes in about a hundred metres of ground; at the start of a run those
+ * hundred metres were three pixels of satellite picture, stretched, which
+ * reads as a smear.
+ *
+ * So a PATCH ROUND THE TARGET is held at the finest zoom from the first frame
+ * — this many metres of it — however far away the aircraft is. It is a few
+ * dozen tiles, asked for once, and they stay because they are wanted; the
+ * ground everywhere else is untouched and still follows the aircraft.
+ *
+ * 0 turns it off and the drone's picture sharpens only as the aircraft closes
+ * in, as it did before.
+ */
+const TARGET_DETAIL_M = 500;      // how much ground round the target is kept sharp
 
 /**
  * ── STEERING IT FROM THE THROTTLE ──────────────────────────────────────────
@@ -325,6 +407,19 @@ const CAM_FOV_MAX = 60;           // and the widest
 /** The lens, wherever the zoom buttons have left it. */
 let camFov = CAM_FOV_DEG;
 
+/** The two cameras, by name. */
+type CamSource = 'self' | 'lion';
+const CAM_SOURCES: CamSource[] = ['self', 'lion'];
+
+/**
+ * WHICH OF THEM ARE BEING LOOKED AT — the map's word, since the camera
+ * screens are there and each one chooses its own. A frame is taken through
+ * every camera on this list and through no other: with no camera screen open
+ * it is empty and none is rendered at all, and only when two screens are on
+ * two different cameras is the world drawn twice.
+ */
+const camWanted = new Set<CamSource>(['self']);
+
 /**
  * ── THE TRIGGER ────────────────────────────────────────────────────────────
  *
@@ -339,8 +434,9 @@ let camFov = CAM_FOV_DEG;
  * things happen instead, and they are counted HERE, in the simulator, so
  * that the world and the picture of it can never disagree:
  *
- *   · the map is told at once that the trigger has gone, and takes the store
- *     that was chosen off the weapons screen;
+ *   · the map is told at once that the trigger has gone, with how long the
+ *     weapon has to fly: the store that was chosen stops blinking, goes
+ *     faint, and counts that time down on the weapons screen;
  *   · WEAPON_FLIGHT_S later the weapon lands: the truck is burnt where it
  *     stands, fire breaks over it for a few seconds, and smoke goes up off
  *     it from then on. See THE WRECK further down.
@@ -358,18 +454,33 @@ const WEAPON_FIRE_ON_HALF = true;
 /** Other buttons on the STICK that fire exactly as the trigger does. */
 const WEAPON_BTN_ALSO = [1];      // b1
 
-/** Seconds from the trigger to the strike. */
+/** Seconds from the trigger to the strike. The map is told this with every
+ *  release and counts it down on the store, so changing it here changes the
+ *  figure on the weapons screen too — there is one clock, not two. */
 const WEAPON_FLIGHT_S = 10;
 
-/** THE TRIGGER WITHOUT THE STICK. Pressing F does exactly what the red
+/** THE TRIGGER WITHOUT THE STICK. Any of these keys does exactly what the red
  *  trigger does, so the whole chain can be tried from the keyboard on a
- *  machine with no joystick plugged in. Set it to '' to turn it off. */
-const WEAPON_KEY = 'KeyF';
+ *  machine with no joystick plugged in: ENTER, either of them, and F for the
+ *  hand that is already on the letters. Empty the list to turn it off.
+ *
+ *  Enter works in the MAP'S window too — it asks this one for the shot over
+ *  the channel — so the weapons screen can be worked with the map in front.
+ *  See TriggerOrder in mapLink.ts. */
+const WEAPON_KEYS = ['Enter', 'NumpadEnter', 'KeyF'];
 
 let triggerWasDown = false;
 /** Set once the weapon lands, and never unset while the flight runs. */
 let modelStruck = false;
 let strikeTimer = 0;
+/** True between the trigger and the strike. The weapons screen lets ONE store
+ *  go at a time — the store that was fired keeps the designation box, faint
+ *  and counting, and nothing is armed again until it lands — so a second pull
+ *  in those seconds has nothing to let go here either. Without this the burst
+ *  would be pushed back to ten seconds from the SECOND pull while the count
+ *  on both screens still ran from the first, and the fire would break over
+ *  the truck after the store had already left the screen. */
+let weaponInTheAir = false;
 
 /** The marks the map is to take off, by id — see TARGETS. */
 const struckMarks = new Set<string>();
@@ -383,6 +494,7 @@ const struckMarks = new Set<string>();
  * no longer a target; and the map is told to take its mark off.
  */
 function strikeTheModel(): void {
+  weaponInTheAir = false;
   modelStruck = true;
   for (const t of TARGETS) if (t.kind === 'truck' && t.strike !== false) struckMarks.add(t.file);
   if (!wrecked) burnTheModel();
@@ -414,7 +526,9 @@ function watchTrigger(): void {
  * seen on the camera exactly as the first was.
  */
 function pullTrigger(): void {
-  mapChannel.postMessage({ kind: 'fire' } satisfies FireOrder);
+  if (weaponInTheAir) return;              // one at a time: see weaponInTheAir
+  weaponInTheAir = true;
+  mapChannel.postMessage({ kind: 'fire', flight: WEAPON_FLIGHT_S } satisfies FireOrder);
   window.clearTimeout(strikeTimer);
   strikeTimer = window.setTimeout(strikeTheModel, WEAPON_FLIGHT_S * 1000);
 }
@@ -433,9 +547,18 @@ function zoomCamera(dt: number): void {
   camFov = Math.min(CAM_FOV_MAX, Math.max(CAM_FOV_MIN, camFov));
 }
 
-/** The lens this frame: wherever the zoom buttons have left it, slaved or not. */
+/** The lens this frame: wherever the zoom buttons have left it, slaved or
+ *  not. This is the AIRCRAFT's camera — the one the throttle works. The
+ *  drone's is worked out from how far off its spot is; see uavLensFor. */
 function camFovNow(): number {
   return Math.min(CAM_FOV_MAX, Math.max(CAM_FOV_MIN, camFov));
+}
+
+/** The lens that lays UAV_CAM_SPAN_M of ground across the picture from `d`
+ *  metres away, kept inside what a lens is allowed to be. */
+function uavLensFor(d: number): number {
+  const half = Math.atan(UAV_CAM_SPAN_M / 2 / Math.max(1, d));
+  return Math.min(CAM_FOV_MAX, Math.max(CAM_FOV_MIN, (half * 360) / Math.PI));
 }
 
 const camCamera = new THREE.PerspectiveCamera(CAM_FOV_DEG, 1, 1, 400_000);
@@ -465,10 +588,20 @@ const _camUp = new THREE.Vector3(0, 1, 0);
  * so does touching the pan buttons: the hand on the throttle always wins.
  */
 let slavedTo: { lat: number; lon: number } | null = null;
+/**
+ * …OR TO THE DRONE ITSELF, which is not a spot but a thing that moves.
+ *
+ * The map cannot hand over a place for it: a place sent now would be a lap
+ * out of date by the time it was looked at. So it hands over the WORD, and
+ * the camera is pointed afresh at wherever the drone has got to, every
+ * frame, here — which is the one window that flies it.
+ */
+let slavedUav = false;
 const _slaveAt = new THREE.Vector3();
 
-function setSlave(to: { lat: number; lon: number } | null): void {
+function setSlave(to: { lat: number; lon: number } | null, what?: 'uav'): void {
   slavedTo = to;
+  slavedUav = what === 'uav';
 }
 
 /** Put the lens where it is wanted, and only tell the camera when it has
@@ -481,8 +614,19 @@ function setCamFov(deg: number): void {
 
 /** Where the camera is pointed this frame — steady, bolted on, or held on a
  *  mark the map has given it. */
-function aimCamCamera(): void {
+function aimCamCamera(which: CamSource): void {
+  if (which === 'lion' && uavGroup) { aimLionCamera(); return; }
   camCamera.position.copy(camera.position);
+  // THE DRONE, held: not a place on the ground but the aircraft in the air,
+  // asked for again this frame. The lens is left where it was, exactly as it
+  // is for a mark — slaving swings the camera and does nothing else.
+  if (slavedUav && uavGroup) {
+    camCamera.up.copy(_camUp);
+    camCamera.lookAt(uavGroup.position);
+    setCamFov(camFovNow());
+    camCamera.updateMatrixWorld();
+    return;
+  }
   if (slavedTo) {
     // Hold the spot: its place on the ground, lifted to the ground's own
     // height where that is known, and the horizon kept level in the picture.
@@ -528,18 +672,70 @@ function aimCamCamera(): void {
 }
 
 /**
- * Take one frame and send it. Called from the render loop, BEFORE the pilot's
- * view is drawn: the belly view goes into the bottom-left corner of the canvas,
- * is copied out, and is then painted over by the main render.
+ * THE DRONE'S CAMERA. Slung under its belly and locked on the spot: wherever
+ * the drone has got to on its circle, the lens is pointed at the ground it is
+ * watching, with the horizon kept level in the picture. The drone itself is
+ * taken out of the world for the one frame — see sendCamFrame — so a wing
+ * never swings through its own view.
+ */
+function aimLionCamera(): void {
+  if (!uavGroup) return;
+  camCamera.position.copy(uavGroup.position);
+  camCamera.position.y -= UAV_CAM_UNDER_M;
+  // The spot it watches: the mark the map has slaved, or else the truck.
+  // A drone cannot be slaved to itself, so when THAT is what is held this
+  // camera keeps to the truck — the aircraft's camera is the one watching
+  // the drone, and this one goes on doing its own job.
+  const spot = (slavedUav ? null : slavedTo) ?? MODEL_AT;
+  _slaveAt.copy(worldPoint(world, spot.lat, spot.lon, 0))
+    .add(terrain.anchor.worldOffset);
+  const ground = terrain.groundHeight(_slaveAt);
+  if (ground !== undefined) _slaveAt.y = ground;
+  // The lens follows the distance, so the patch of ground in the picture is
+  // the same one however high the drone is flying.
+  setCamFov(uavLensFor(camCamera.position.distanceTo(_slaveAt)));
+  camCamera.up.copy(_camUp);
+  camCamera.lookAt(_slaveAt);
+  camCamera.updateMatrixWorld();
+}
+
+/**
+ * Take a frame through every camera that is being looked at, and send them.
+ * Called from the render loop, BEFORE the pilot's view is drawn: each camera's
+ * view goes into the bottom-left corner of the canvas, is copied out, and is
+ * then painted over by the main render — so none of it is ever seen here.
+ *
+ * NOTHING IS RENDERED THAT NOBODY IS WATCHING. With no camera screen open
+ * this does nothing at all; with one screen it costs one pass over the world;
+ * only two screens on two different cameras cost two.
  */
 function sendCamFrame(now: number): void {
-  if (!CAM_ON || !camCaptureCtx) return;
+  if (!CAM_ON || !camCaptureCtx || !camWanted.size) return;
   if (now - camSentAt < 1000 / CAM_FPS) return;
   camSentAt = now;
+  for (const which of CAM_SOURCES) if (camWanted.has(which)) takeCamFrame(which);
+}
 
-  aimCamCamera();
+/** One frame, through one of the two. */
+function takeCamFrame(which: CamSource): void {
+  if (!camCaptureCtx) return;
+  if (which === 'lion' && !uavGroup) return;   // no drone yet, no picture
+
+  aimCamCamera(which);
   showHoops(false);
+  // Looking THROUGH the drone, the drone is not in the shot: it is hidden for
+  // the one render and put straight back, so nothing else in the world knows
+  // it was ever away.
+  const lionSeen = uavGroup?.visible ?? false;
+  if (which === 'lion' && uavGroup) uavGroup.visible = false;
   sizeMark(camCamera, MARK_SCREEN_CAM);   // its own size in this picture
+  // AND ITS OWN SIGHT LINE. What the pilot's window decided says nothing
+  // here: the sight is taken afresh from where THIS lens hangs, so the
+  // drone's picture can carry a badge the pilot has lost behind a ridge, and
+  // can lose one he still has.
+  const markShown = modelMark?.visible ?? false;
+  const markHere = markLit && (which !== 'lion' || MARK_IN_LION);
+  if (modelMark) modelMark.visible = markHere && markInSight(camCamera.position);
 
   // ── HOW BIG A SQUARE THERE IS ROOM FOR ────────────────────────────────
   //
@@ -561,6 +757,8 @@ function sendCamFrame(now: number): void {
   renderer.setScissor(0, 0, box, box);
   renderer.setScissorTest(true);
   renderer.render(scene, camCamera);
+  if (uavGroup) uavGroup.visible = lionSeen;
+  if (modelMark) modelMark.visible = markShown;
   showHoops(true);
   sizeMark(camera, MARK_SCREEN_SIM);
   renderer.setScissorTest(false);
@@ -593,21 +791,21 @@ function sendCamFrame(now: number): void {
     0, 0, CAM_PX, CAM_PX,
   );
 
-  // The lens travels with the picture: the map puts on a quieter set of
-  // markings once it is tight, whether the zoom came from the throttle or
-  // from slaving the camera to a mark.
+  // The lens travels with the picture, and so does which camera took it: the
+  // map hands each frame to the screens showing that camera, and puts on a
+  // quieter set of markings once the lens is tight.
   const fov = camCamera.fov;
   if (camUseBitmap) {
     createImageBitmap(camCapture).then((image) => {
       try {
-        mapChannel.postMessage({ kind: 'cam', image, fov, runId } satisfies CamFrame);
+        mapChannel.postMessage({ kind: 'cam', image, from: which, fov, runId } satisfies CamFrame);
       } catch {
         camUseBitmap = false;   // this browser will not carry a picture; send text
       }
     }).catch(() => { camUseBitmap = false; });
   } else {
     mapChannel.postMessage({
-      kind: 'cam', image: camCapture.toDataURL('image/jpeg', 0.6), fov, runId,
+      kind: 'cam', image: camCapture.toDataURL('image/jpeg', 0.6), from: which, fov, runId,
     } satisfies CamFrame);
   }
 }
@@ -693,15 +891,28 @@ function fuelLb(): number {
  *  cheaper than sending one per rendered frame. */
 const MAP_FIX_INTERVAL = 1 / 20;
 const mapChannel = new BroadcastChannel(MAP_CHANNEL);
-// The one thing the map sends BACK: the spot the belly camera is to hold, or
-// null to let it go. Everything else on this channel runs the other way.
+// What the map sends BACK: the spot the belly camera is to hold (or null to
+// let it go), what it has chosen, whether everything is held — and Enter,
+// pressed with the map in front, asking for a shot. Everything else on this
+// channel runs the other way.
 mapChannel.addEventListener('message', (e: MessageEvent) => {
-  const m = e.data as SlaveOrder | PauseOrder | ResetOrder | PickOrder;
+  const m = e.data as
+    SlaveOrder | PauseOrder | ResetOrder | PickOrder | CamSourceOrder | TriggerOrder
+    | WeaponCueOrder;
   if (!m) return;
-  if (m.kind === 'slave') setSlave((m as SlaveOrder).at ?? null);
+  if (m.kind === 'slave') setSlave((m as SlaveOrder).at ?? null, (m as SlaveOrder).what);
   else if (m.kind === 'pause') setPaused((m as PauseOrder).on, false);
   else if (m.kind === 'reset') startAgain();
   else if (m.kind === 'pick') notePicked((m as PickOrder).ids);
+  // Enter, pressed with the MAP in front. The shot is let go here, where
+  // every other shot is let go, so nothing about it is a special case.
+  else if (m.kind === 'trigger') { if (started) pullTrigger(); }
+  // …and the weapons screen saying what it is about, for the HUD's corner.
+  else if (m.kind === 'cue') showWeaponCue(m.store, m.clock);
+  else if (m.kind === 'camsource') {
+    camWanted.clear();
+    for (const which of (m as CamSourceOrder).want) camWanted.add(which);
+  }
 });
 
 /**
@@ -762,6 +973,7 @@ function sendMapFix(): void {
     areas: areaMarks(),
     cues: cueMarks(),
   };
+  if (uavAt) fix.uav = { ...uavAt };
   if (mapFixCount++ % TRAIL_EVERY === 0) fix.trail = trail.map((p) => latLonFromWorld(world, p));
   mapChannel.postMessage(fix);
 }
@@ -857,18 +1069,17 @@ const ROUTE_PLAN: RouteStep[] = [
 
   // FROM HERE UP THE WEST SIDE. The tail is written as places rather than as
   // turns, because what matters about it is where it lies on the ground: it
-  // passes WEST of Lake Qaraoun, and AAT stands about 1.2 km clear of the
-  // water's western shore — two kilometres from the launcher.
-  { at: { lat: 33.4530, lon: 35.6500, alt: 1_000 } },   //  6A
-  // 7A is the break: the line comes up to it on 015° and leaves on 357°, an
-  // eighteen-degree swing to the WEST — it now leans a little west of north
-  // rather than east of it. 8A, AAT and 10A all stand on that one straight
-  // line, so the whole stretch past the lake has moved west with it.
-  { at: { lat: 33.4850, lon: 35.6600, alt: 1_000 } },   //  7A — breaks west
-  { at: { lat: 33.5164, lon: 35.6580, alt: 1_000 } },   //  8A — straight on
-  { at: { lat: 33.5559, lon: 35.6555, alt: 1_000 } },   //  9A — AAT: 2.6 km west
-                                            //       of the lake, and the high one
-  { at: { lat: 33.5963, lon: 35.6530, alt: 1_000 } },   // 10A
+  // passes WEST of Lake Qaraoun.
+  { at: { lat: 33.4530, lon: 35.6500, alt: 1_000 } },   //  6A — THE BREAK
+  // 6A IS THE CORNER NOW. The line comes up to it on 014° and leaves on 354°,
+  // a twenty-degree swing to the WEST, and 7A, 8A and AAT all stand on that
+  // one straight run — so the break is made once, at 6A, and the whole
+  // stretch past the lake lies a mile and three quarters further west than it
+  // did. It used to run straight through 6A and break at 7A instead.
+  { at: { lat: 33.4859, lon: 35.6459, alt: 1_000 } },   //  7A — straight on
+  { at: { lat: 33.5171, lon: 35.6419, alt: 1_000 } },   //  8A — straight on
+  { at: { lat: 33.5565, lon: 35.6370, alt: 1_000 } },   //  9A — AAT, the high one
+  { at: { lat: 33.5963, lon: 35.6530, alt: 1_000 } },   // 10A — leans back east
   // …and from here the line leans back to the right for the last two.
   { at: { lat: 33.6273, lon: 35.6596, alt: 1_000 } },   // 11A
   { at: { lat: 33.6663, lon: 35.6721, alt: 1_000 } },   // 12A
@@ -1126,9 +1337,7 @@ const MODEL_SUN_FROM = { bearing: 140, height: 45 };
  * It is NOT seen from the far side of the country: it comes up only once the
  * aircraft is within MARK_RANGE_M of it, over the last MARK_FADE_M of that.
  *
- * It stands on the middle of the roof and always faces the aircraft; it is
- * drawn over whatever lies in front of it, so a rise in the ground does not
- * swallow it.
+ * It stands on the middle of the roof and always faces the aircraft.
  */
 const MODEL_MARK = './icons/Car%20Hozi.png';
 const MARK_SCREEN_SIM = 0.05;     // share of the simulator window's height
@@ -1136,6 +1345,76 @@ const MARK_SCREEN_CAM = 0.12;     // share of the camera picture's height
 const MARK_RANGE_M = 30_000;      // first seen this far out
 const MARK_FADE_M = 500;          // and comes up over this much of it
 const MARK_LIFT_M = 0;            // extra air between the roof and its foot
+
+/**
+ * ── AND ONLY WHILE THE GROUND IS NOT IN THE WAY ─────────────────────────────
+ *
+ * A badge is not a thing hanging in the sky: it says HERE IS THE TARGET, and
+ * there is nothing to say while a hill stands between the eye and the target.
+ * So the badge goes when the ground hides it — and it goes PER SCREEN, which
+ * is the whole point of this: the sight line is drawn afresh from whichever
+ * eye is about to look, and every eye answers for itself.
+ *
+ *   the simulator's window   from the aircraft, wherever it has got to
+ *   the SELF camera          from the aircraft as well — it is slung under
+ *                            the same airframe, so it loses the target at
+ *                            the same moment the pilot does
+ *   the LION camera          from the drone, high over the target — though
+ *                            as things stand the drone's picture carries no
+ *                            badge at all; see MARK_IN_LION below
+ *
+ * So a ridge can leave the badge out of the pilot's window and out of his own
+ * camera at the same moment, a rise between him and the target can take it
+ * while he is well within range, and nothing in one screen decides anything
+ * about another.
+ *
+ * THIS IS ON TOP OF THE RANGE, not instead of it: the badge must be within
+ * MARK_RANGE_M, the target must be chosen, AND the ground must be out of the
+ * way. Fail any one of the three and there is no badge.
+ *
+ * HOW THE SIGHT IS TAKEN. The straight line from the eye to a point over the
+ * truck's roof is walked, and at every step the terrain is asked how high it
+ * stands there; ground above the line closes the sight. Two things keep that
+ * honest over tens of kilometres:
+ *
+ *   MARK_SIGHT_OVER_M  far off, the landscape is drawn from a COARSE tile and
+ *                      a hilltop can read tens of metres out, either way. So
+ *                      the ground must rise this far ABOVE the line before it
+ *                      counts, which stops the badge blinking on and off as
+ *                      finer ground streams in.
+ *   MARK_SIGHT_NEAR_M  flying low, the ground a hundred metres ahead is
+ *                      always close to the line and is never what hides
+ *                      something 30 km off, so that first stretch is left out
+ *                      of the walk.
+ *
+ * MARK_SIGHT_UP_M lifts the point the sight is taken TO above the roof, since
+ * the badge itself stands in the air over the truck: a bank that hides the
+ * wheels does not hide a sign ten metres up.
+ *
+ * Set MARK_HIDDEN_BY_GROUND false to have the badge drawn over whatever lies
+ * in front of it, as it was before — a rise in the ground then does not
+ * swallow it in any screen.
+ */
+const MARK_HIDDEN_BY_GROUND = true;
+const MARK_SIGHT_STEPS = 192;     // readings along the line, eye to target
+const MARK_SIGHT_OVER_M = 25;     // the ground must stand this far above it
+const MARK_SIGHT_NEAR_M = 150;    // the stretch by the eye left out
+const MARK_SIGHT_UP_M = 10;       // and how far over the roof it is aimed
+
+/**
+ * ── AND IT IS NOT IN THE DRONE'S PICTURE AT ALL ─────────────────────────────
+ *
+ * The badge belongs to the AIRCRAFT: it is what the pilot's window and the
+ * camera slung under the same airframe put over the thing they are looking
+ * for. The drone is not looking for it — it is already over it — so its
+ * picture carries no badge, whatever the range and whatever the ground is
+ * doing. Nothing is worked out for that screen: no sight line is taken,
+ * because there is nothing to show either way.
+ *
+ * Set this true and the drone's picture gets the badge on the same terms as
+ * the other two — chosen, in range, and the ground out of the way.
+ */
+const MARK_IN_LION = false;
 /**
  * AND ONLY WHILE THE TARGET IS CHOSEN.
  *
@@ -1229,6 +1508,58 @@ const SMOKE_GREY = 0.13;          // 0 is black smoke, 1 is white steam
 const SMOKE_OPACITY = 0.95;       // how solid one is at its thickest
 
 /**
+ * ── THE DRONE OVER THE TARGET ───────────────────────────────────────────────
+ *
+ * A real thing in the world, not a picture: a small aircraft that holds a
+ * level circle over the truck for as long as the flight lasts. Because it
+ * stands in the world like the truck does, the camera sees it, the pilot
+ * sees it through the window, a hill can pass in front of it, and it grows
+ * as you close on the target. It is NOT the map's drone — that one is an
+ * icon drawn flat on the map, and the two are set apart from each other.
+ *
+ * WHERE IT FLIES. Round MODEL_AT — wherever the truck is put, the circle
+ * follows — at UAV_RADIUS_M out from it and UAV_ALT_M above the ground the
+ * truck stands on. The height is held, so the circle is level even where the
+ * ground underneath it rises and falls.
+ *
+ * HOW FAST. UAV_PERIOD_S is the seconds one whole lap takes; smaller is
+ * faster. UAV_WAY 1 goes round clockwise seen from above, -1 the other way,
+ * and the drone banks into whichever turn it is making. UAV_START_DEG is
+ * where on the circle it begins, in degrees from north.
+ *
+ * WHAT IT LOOKS LIKE. With UAV_FILE left empty one is BUILT here out of
+ * plain shapes — a tapered body, a long straight wing, a V-tail, a sensor
+ * ball under the nose and a pusher propeller behind — sized so the whole
+ * thing is UAV_SPAN_M across, wingtip to wingtip. Drop a .glb into
+ * public/icons and name it in UAV_FILE and that is flown instead, scaled to
+ * the same span; UAV_TURN_DEG turns a file that was not drawn nose-north.
+ *
+ * It is held when the flight is held, and START AGAIN leaves it alone: it
+ * carries nothing that a reset could undo.
+ */
+const UAV_ON = true;
+const UAV_FILE = '';              // '' builds one; './icons/x.glb' flies that
+const UAV_RADIUS_M = 1200;         // how far out from the truck it circles
+// 7,315.2 m is 24,000 ft, which is what the map writes beside its mark: 24'
+// — a height in the air is said in THOUSANDS of feet, so 24 is twenty-four
+// thousand (--uav-height-per in map.html). The two are ONE FIGURE: change
+// this and the writing follows it, and so does the drone's lens, which is
+// given as a patch of ground rather than as degrees (UAV_CAM_SPAN_M). From
+// up there the camera looks all but straight down; for the old slanting
+// view, open the circle out in step with the height — 12,000 m here keeps
+// the very same angle it had at 2,400 ft.
+const UAV_ALT_M = 7315.2;         // and how high above the ground it stands on
+const UAV_PERIOD_S = 70;          // seconds for one lap; smaller is faster
+const UAV_WAY = 1;                // 1 clockwise from above, -1 the other way
+const UAV_START_DEG = 0;          // where on the circle it starts, from north
+const UAV_SPAN_M = 45;            // how wide it is, wingtip to wingtip
+const UAV_BANK_DEG = 12;          // how far it leans into the turn
+const UAV_TURN_DEG = 0;           // only for a FILE that is not drawn nose-north
+const UAV_BODY = 0xb9b4a6;        // the colour of it
+const UAV_DARK = 0x4a4740;        // and of the propeller and the sensor ball
+/** Its camera's own knobs sit with the other cameras', up by CAM_FPS. */
+
+/**
  * WHAT THE MAP HAS CHOSEN, by id. The map is the one that does the choosing —
  * a press on a mark or on a row — and it sends the whole list every time it
  * changes; this is simply a copy of it. START AGAIN empties it, as the map
@@ -1281,6 +1612,9 @@ function loadModel(): void {
     scene.add(group);
     modelGroup = group;
     modelAt.copy(worldPoint(world, MODEL_AT.lat, MODEL_AT.lon, 0));
+    // The ground round it is worth having sharp from the first frame, because
+    // the drone is looking at it long before the aircraft is anywhere near.
+    terrain.watchSpot(modelAt, TARGET_DETAIL_M);
   });
 }
 
@@ -1343,6 +1677,37 @@ function markFade(): number {
   return (MARK_RANGE_M - d) / Math.max(1, MARK_FADE_M);
 }
 
+/**
+ * Where the sight is taken TO: the air just over the middle of the truck's
+ * roof, which is where the badge itself stands.
+ */
+const _markSight = new THREE.Vector3();
+function markSightAt(): THREE.Vector3 {
+  _markSight.copy(modelGroup!.position);
+  _markSight.y += markRoof + MARK_LIFT_M + MARK_SIGHT_UP_M;
+  return _markSight;
+}
+
+/** Can the badge be seen from `eye`, or is there ground in the way? Asked
+ *  afresh for every screen, since every screen looks from its own place. */
+function markInSight(eye: THREE.Vector3): boolean {
+  if (!MARK_HIDDEN_BY_GROUND) return true;
+  if (!modelGroup) return false;
+  return !terrain.sightBlocked(eye, markSightAt(), {
+    steps: MARK_SIGHT_STEPS,
+    overBy: MARK_SIGHT_OVER_M,
+    skipNear: MARK_SIGHT_NEAR_M,
+  });
+}
+
+/**
+ * Whether the badge is WANTED at all this frame — chosen, in range, not a
+ * wreck — before any one screen has asked whether it can actually see it.
+ * Each screen then takes its own sight line off this: see the camera's own
+ * pass in takeCamFrame.
+ */
+let markLit = false;
+
 /** Every frame: keep it on its spot, standing on the ground as it is known. */
 function updateModel(): void {
   if (!modelGroup) return;
@@ -1356,12 +1721,140 @@ function updateModel(): void {
     // Struck, the badge is gone for good: the wreck comes back, the sign on
     // its roof does not.
     const fade = modelStruck ? 0 : markFade();
-    modelMark.visible = fade > 0;
+    markLit = fade > 0;
+    // The pilot's own window: his eye, his sight line. The cameras take
+    // theirs for themselves, each from where it hangs.
+    modelMark.visible = markLit && markInSight(camera.position);
     modelMark.material.opacity = fade;
     sizeMark(camera, MARK_SCREEN_SIM);
   }
 }
 
+
+/** The drone and where it has got to round its circle, in radians. */
+let uavGroup: THREE.Group | null = null;
+/** Where the drone is this frame, in degrees, for the map to draw its mark
+ *  at. Null until it is flying. */
+let uavAt: { lat: number; lon: number; headingDeg: number; heightFt: number } | null = null;
+let uavAngle = (UAV_START_DEG * Math.PI) / 180;
+
+/** One built out of plain shapes, nose along -z (north) and the span along
+ *  x, the whole of it UAV_SPAN_M wide. Every part is a share of the span, so
+ *  changing the span changes the size and nothing else. */
+function buildUav(): THREE.Object3D {
+  const span = UAV_SPAN_M;
+  const skin = new THREE.MeshStandardMaterial({ color: UAV_BODY, roughness: 0.75, metalness: 0.05 });
+  const dark = new THREE.MeshStandardMaterial({ color: UAV_DARK, roughness: 0.55, metalness: 0.15 });
+  const drone = new THREE.Group();
+
+  const len = span * 0.6;          // how long the body is
+  const rad = span * 0.028;        // and how thick at its thickest
+
+  // The body: a cylinder laid along z, fat at the nose and drawn out to the
+  // tail. Rotated a quarter turn, its foot goes to -z, so that is the nose.
+  const tube = new THREE.Mesh(new THREE.CylinderGeometry(rad * 0.45, rad, len, 18), skin);
+  tube.rotation.x = Math.PI / 2;
+  drone.add(tube);
+
+  const nose = new THREE.Mesh(new THREE.SphereGeometry(rad, 18, 12), skin);
+  nose.position.z = -len / 2;
+  nose.scale.z = 1.3;
+  drone.add(nose);
+
+  // The ball it looks through, slung under the nose.
+  const ball = new THREE.Mesh(new THREE.SphereGeometry(rad * 1.05, 16, 12), dark);
+  ball.position.set(0, -rad * 0.85, -len * 0.3);
+  drone.add(ball);
+
+  // The wing: long, straight and thin, sitting high on the body.
+  const wing = new THREE.Mesh(
+    new THREE.BoxGeometry(span, span * 0.012, span * 0.075), skin);
+  wing.position.set(0, rad * 0.65, -len * 0.04);
+  drone.add(wing);
+
+  // A V-tail: two fins leaning out from the top of the tail.
+  const finLen = span * 0.16;
+  const finGeo = new THREE.BoxGeometry(span * 0.01, finLen, span * 0.055);
+  finGeo.translate(0, finLen / 2, 0);
+  for (const side of [-1, 1]) {
+    const fin = new THREE.Mesh(finGeo, skin);
+    fin.position.set(0, rad * 0.5, len * 0.4);
+    fin.rotation.z = (side * 40 * Math.PI) / 180;
+    drone.add(fin);
+  }
+
+  // And the propeller behind it — a disc, since it is turning.
+  const prop = new THREE.Mesh(
+    new THREE.CylinderGeometry(span * 0.085, span * 0.085, span * 0.004, 20),
+    new THREE.MeshStandardMaterial({
+      color: UAV_DARK, roughness: 0.6, transparent: true, opacity: 0.35,
+      side: THREE.DoubleSide,
+    }));
+  prop.rotation.x = Math.PI / 2;
+  prop.position.z = len * 0.52;
+  drone.add(prop);
+
+  return drone;
+}
+
+/** Put it in the world: the built one, or a file flown in its place and
+ *  scaled to the same span. */
+function loadUav(): void {
+  if (!UAV_ON) return;
+  const hang = (thing: THREE.Object3D): void => {
+    thing.rotation.y += (UAV_TURN_DEG * Math.PI) / 180;
+    const group = new THREE.Group();
+    group.rotation.order = 'YXZ';   // so the lean is about its own nose
+    group.add(thing);
+    scene.add(group);
+    uavGroup = group;
+  };
+  if (!UAV_FILE) { hang(buildUav()); return; }
+  new GLTFLoader().load(UAV_FILE, (gltf) => {
+    const thing = gltf.scene;
+    thing.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(thing);
+    const wide = Math.max(box.max.x - box.min.x, box.max.z - box.min.z);
+    if (wide > 0) thing.scale.multiplyScalar(UAV_SPAN_M / wide);
+    hang(thing);
+  });
+}
+
+/** Every frame: round the circle it goes, nose along the way it is going and
+ *  leaning into the turn. It only moves on while the flight is running, so a
+ *  hold stops it where it is. */
+function updateUav(dt: number, running: boolean): void {
+  if (!uavGroup || !modelGroup) return;
+  // (uavAt, set at the foot of this, is what the map draws its mark from.)
+  if (running) uavAngle += (UAV_WAY * 2 * Math.PI * dt) / Math.max(0.1, UAV_PERIOD_S);
+  // Where on the circle, as metres north and east of the truck, turned into
+  // a coordinate the world can be asked about.
+  const north = Math.cos(uavAngle) * UAV_RADIUS_M;
+  const east = Math.sin(uavAngle) * UAV_RADIUS_M;
+  const lat = MODEL_AT.lat + north / 111_320;
+  const lon = MODEL_AT.lon + east / (111_320 * Math.cos((MODEL_AT.lat * Math.PI) / 180));
+  const at = worldPoint(world, lat, lon, 0).add(terrain.anchor.worldOffset);
+  // The height is held off the ground the TRUCK stands on, not the ground
+  // under the drone, so the circle is level all the way round.
+  at.y = modelGroup.position.y + UAV_ALT_M;
+  uavGroup.position.copy(at);
+  // Nose along the way it is going — a quarter turn on from where it stands
+  // on the circle — and the inside wing dropped.
+  const hdg = uavAngle + (UAV_WAY * Math.PI) / 2;
+  uavGroup.rotation.y = -hdg;
+  uavGroup.rotation.z = (-UAV_WAY * UAV_BANK_DEG * Math.PI) / 180;
+  // And where it has got to, for the map's mark — see THE DRONE'S MARK in
+  // demo/map.ts. The two are then one thing: the mark stands where the
+  // drone is, and pressing it and Slave puts the camera on that drone.
+  // …and the height it is holding, which is what the map writes beside the
+  // mark. The drone flies at that height and the map says that height: there
+  // is one figure, set here, and nothing to keep in step by hand.
+  uavAt = {
+    lat, lon,
+    headingDeg: ((hdg * 180) / Math.PI + 360) % 360,
+    heightFt: UAV_ALT_M * 3.28084,
+  };
+}
 
 /**
  * ── THE WRECK ───────────────────────────────────────────────────────────────
@@ -1606,6 +2099,7 @@ function updateSmoke(dt: number): void {
  */
 function startAgain(): void {
   window.clearTimeout(strikeTimer);
+  weaponInTheAir = false;                  // a weapon in the air never lands
   modelStruck = false;
   struckMarks.clear();
   pickedMarks.clear();                     // the map lets go of its own too
@@ -1651,6 +2145,7 @@ function showHoops(on: boolean): void {
 
 buildHoops();
 loadModel();
+loadUav();
 
 /**
  * ══ THE TARGETS ═════════════════════════════════════════════════════════════
@@ -2093,7 +2588,7 @@ const justPressed = new Set<string>();
 function keyDown(code: string): void {
   if (!started) return;
   if (code === 'Escape' && !keys.has(code)) setPaused(!paused);
-  if (code === WEAPON_KEY && !keys.has(code)) pullTrigger();
+  if (WEAPON_KEYS.includes(code) && !keys.has(code)) pullTrigger();
   if (!keys.has(code)) justPressed.add(code);
   keys.add(code);
 }
@@ -2349,6 +2844,43 @@ function headingLabel(d: number): string {
   if (dd === 270) return 'W';
   return String(dd / 10).padStart(2, '0'); // 300→"30", 60→"06"
 }
+/**
+ * ── WHAT IS MARKED ON THE TAPE BESIDES THE DEGREES ─────────────────────────
+ *
+ * Two things are put on the compass tape at the bearing they lie on, so that
+ * a glance at the top of the screen says which way to turn for either:
+ *
+ *   A WHITE DOT      the next point on the route — the hoop that has not been
+ *                    flown through yet. It moves on to the following one as
+ *                    each is passed, and once the last is behind there is no
+ *                    dot at all.
+ *   A RED TRIANGLE   the target CHOSEN ON THE MAP, if it is one that stands
+ *                    somewhere in this world. Only three of the marks do —
+ *                    BN222, TR383 and GE867, the ones in TARGETS — and one
+ *                    mark is chosen at a time, wherever it is pressed: on the
+ *                    map, on a targets screen or in the friends and foes
+ *                    list. So there is one triangle, or none.
+ *
+ * Each is drawn where its bearing falls on the tape, which is the same place
+ * the degrees themselves are drawn, and simply is not drawn when its bearing
+ * is off the ends of the tape — that is, when the thing is behind you.
+ *
+ * The sizes are in pixels of the tape, and the two Y numbers are how far
+ * BELOW the line of the ticks each one sits: 0 puts a mark on the ticks
+ * themselves, and a larger number moves it down towards the bottom edge.
+ */
+const CMP_WP_ON = true;
+const CMP_WP_COLOUR = '#ffffff';
+const CMP_WP_SIZE = 4.5;      // the dot's radius
+const CMP_WP_Y = 0;           // on the line of the ticks
+/** How near a waypoint counts as reached, in metres along the route: inside
+ *  this the dot has already moved on to the one after it. */
+const CMP_WP_REACHED_M = 400;
+const CMP_TGT_ON = true;
+const CMP_TGT_COLOUR = '#ff3b30';
+const CMP_TGT_SIZE = 5;     // half the triangle's width
+const CMP_TGT_Y = 0;          // how far under the ticks its point sits
+
 // ── Compass fill colours ─ set these (the black outline stays black either way).
 //    Each controls the FILL/line colour only, not the outline stroke.
 // F-15 style HUD green (matches --hud in index.html).
@@ -2359,6 +2891,68 @@ const CMP_COLOR_MAJOR = HUD_GREEN;    // long ticks (every 30°) + their label (
 const CMP_COLOR_POINTER = HUD_GREEN;  // centre pointer line + the big heading number above it
 
 
+
+/** Scratch for the two below, so neither disturbs the one the fix uses. */
+const _cmpAbs = new THREE.Vector3();
+
+/** Where the aircraft is now, in degrees. */
+function hereNow(): { lat: number; lon: number } {
+  _cmpAbs.copy(camera.position).sub(terrain.anchor.worldOffset);
+  return latLonFromWorld(world, _cmpAbs);
+}
+
+/** The bearing from the aircraft to a spot on the ground, degrees from north.
+ *  (bearingBetween, up by the route, is the same sum between two waypoints;
+ *  this one starts from wherever the aircraft happens to be.) */
+function bearingFromHere(from: { lat: number; lon: number }, to: { lat: number; lon: number }): number {
+  const kx = Math.cos((from.lat * Math.PI) / 180);   // longitude is shorter here
+  const deg = (Math.atan2((to.lon - from.lon) * kx, to.lat - from.lat) * 180) / Math.PI;
+  return (deg % 360 + 360) % 360;
+}
+
+/**
+ * THE NEXT POINT ON THE ROUTE — the first waypoint still ahead.
+ *
+ * "Ahead" is measured ALONG THE ROUTE, not as the crow flies: the point of
+ * the route nearest the aircraft is found, and the first waypoint further on
+ * than that is the next one. So flying wide of a corner still counts it as
+ * passed, and a route that doubles back cannot make an old waypoint the next
+ * one again. Null once the last is behind.
+ */
+function nextWaypoint(): { lat: number; lon: number } | null {
+  const pts = ROUTE_WAYPOINTS;
+  if (pts.length < 2) return null;
+  const me = hereNow();
+  const kx = Math.cos((me.lat * Math.PI) / 180);
+  const at: number[] = [0];        // how far along each waypoint sits, degrees
+  let walked = 0;
+  let along = 0;
+  let bestD = Infinity;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const ax = (pts[i].lon - me.lon) * kx, ay = pts[i].lat - me.lat;
+    const bx = (pts[i + 1].lon - me.lon) * kx, by = pts[i + 1].lat - me.lat;
+    const vx = bx - ax, vy = by - ay;
+    const len2 = vx * vx + vy * vy;
+    // Where on this leg the aircraft is abeam, kept to the leg's own ends —
+    // except BEFORE THE FIRST, where it is let run negative. The aircraft is
+    // put down a couple of kilometres behind the first waypoint, and held to
+    // the leg's end that would read as already there: the first waypoint
+    // would never be the next one, and the dot would start on the second.
+    const back = i === 0 ? -Infinity : 0;
+    const t = len2 > 0 ? Math.min(1, Math.max(back, -(ax * vx + ay * vy) / len2)) : 0;
+    const px = ax + vx * t, py = ay + vy * t;
+    const d = px * px + py * py;
+    const leg = Math.sqrt(len2);
+    if (d < bestD) { bestD = d; along = walked + leg * t; }
+    walked += leg;
+    at.push(walked);
+  }
+  const reached = CMP_WP_REACHED_M / 111_320;        // metres, in degrees
+  for (let i = 0; i < pts.length; i++) {
+    if (at[i] - along > reached) return pts[i];
+  }
+  return null;
+}
 
 function drawCompass(): void {
   const ctx = compassCtx, W = cmpW, H = cmpH;
@@ -2400,6 +2994,54 @@ function drawCompass(): void {
       ctx.font = '400 16px Roboto, system-ui, sans-serif';
       ctx.textBaseline = 'alphabetic';
       strokedText(headingLabel(d), x, midY - half - 6, CMP_COLOR_MAJOR);
+    }
+  }
+
+  // ── WHAT ELSE IS ON THE TAPE: the next point on the route, and whatever
+  // has been chosen on the map. Both are put at the bearing they lie on, and
+  // left off when that bearing runs off the ends of the tape.
+  const onTape = (bearing: number): number | null => {
+    const diff = ((bearing - heading + 540) % 360) - 180;
+    const x = cx + diff * CMP_DEG;
+    return (x < 4 || x > W - 4) ? null : x;
+  };
+  const me = (CMP_WP_ON || CMP_TGT_ON) ? hereNow() : null;
+
+  if (CMP_WP_ON && me) {
+    const wp = nextWaypoint();
+    const x = wp ? onTape(bearingFromHere(me, wp)) : null;
+    if (x !== null) {
+      const y = midY + CMP_WP_Y;
+      ctx.beginPath(); ctx.arc(x, y, CMP_WP_SIZE + OUT_LINE * 2, 0, Math.PI * 2);
+      ctx.fillStyle = HUD_OUTLINE; ctx.fill();          // the dark rim first
+      ctx.beginPath(); ctx.arc(x, y, CMP_WP_SIZE, 0, Math.PI * 2);
+      ctx.fillStyle = CMP_WP_COLOUR; ctx.fill();
+    }
+  }
+
+  if (CMP_TGT_ON && me) {
+    for (const target of TARGETS) {
+      if (!pickedMarks.has(target.file)) continue;
+      // Wherever the mark stands — a place of its own, or one worked out
+      // from the route — the same way the map is told of it.
+      const at = target.at ?? besideRoute(target.after ?? 1, target.run ?? 0, target.left ?? 0);
+      const x = onTape(bearingFromHere(me, at));
+      if (x === null) continue;
+      // A small triangle standing under the ticks, its point up at them.
+      const triangle = (grow: number, colour: string): void => {
+        const half = CMP_TGT_SIZE + grow;
+        const top = midY + CMP_TGT_Y - grow;
+        const foot = midY + CMP_TGT_Y + CMP_TGT_SIZE * 1.5 + grow;
+        ctx.beginPath();
+        ctx.moveTo(x, top);
+        ctx.lineTo(x - half, foot);
+        ctx.lineTo(x + half, foot);
+        ctx.closePath();
+        ctx.fillStyle = colour;
+        ctx.fill();
+      };
+      triangle(OUT_LINE * 2, HUD_OUTLINE);              // the dark rim first
+      triangle(0, CMP_TGT_COLOUR);
     }
   }
 
@@ -2722,6 +3364,11 @@ function frame(now: number): void {
 
   justPressed.clear();
   tapReset = false;
+  // THE TRUCK FIRST, then the cameras. The camera pass takes its own sight
+  // line to the badge (see takeCamFrame), and a sight line is only as good
+  // as the place it is drawn from: settle the truck on its ground and work
+  // out whether the badge is wanted at all BEFORE any lens looks at it.
+  updateModel();
   if (started && !paused) {
     panCamera(dt);
     zoomCamera(dt);
@@ -2731,7 +3378,7 @@ function frame(now: number): void {
     sendCamFrame(performance.now());
   }
   updateHoops();
-  updateModel();
+  updateUav(dt, started && !paused);
   renderer.render(scene, camera);
   requestAnimationFrame(frame);
 }

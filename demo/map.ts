@@ -27,7 +27,8 @@
  */
 import {
   MAP_CHANNEL, type CamFrame, type MapFix, type MapMessage, type PauseOrder,
-  type PickOrder, type ResetOrder, type SlaveOrder,
+  type PickOrder, type CamSourceOrder, type ResetOrder, type SlaveOrder,
+  type TriggerOrder, type WeaponCueOrder,
 } from './mapLink';
 
 /*
@@ -53,7 +54,10 @@ const CAM_OVERLAY_ZOOM: Record<string, string> = {
   './icons/cam_5_layout.png': './icons/cam_5_layout_zoomin.png',
   './icons/cam_3_layout.png': './icons/cam_3_layout_zoomin.png',
 };
-let camZoomed = false;
+/** Whether each of the two cameras is zoomed in past the line — kept apart,
+ *  since the drone's lens and the aircraft's are nothing to do with each
+ *  other and each screen wears the markings of the camera it is showing. */
+const camZoomed: Record<'self' | 'lion', boolean> = { self: false, lion: false };
 
 /** Esri World Imagery, the simulator's own texture provider (zoom/y/x order). */
 const TILE_URL =
@@ -256,6 +260,19 @@ beamIcon.src = './icons/Ellipse.png';
 /** The wingman's own artwork — the cyan jet that holds formation. */
 const friendIcon = new Image();
 friendIcon.src = './icons/Friend.png';
+/** The drone's artwork — the one that circles the truck. */
+const uavIcon = new Image();
+uavIcon.src = './icons/Lion_icon.png';
+/**
+ * THE DRONE'S MARK, under the same name everywhere.
+ *
+ * It is chosen and let go through pickMark, exactly as a truck is, so only
+ * one thing on the whole map is ever chosen at a time, drone or truck. It is
+ * not in the fix's target list and it is in no list on the right — it is
+ * pressed on the map itself, and nothing else looks this name up.
+ */
+const UAV_MARK = 'uav_icon';
+uavIcon.addEventListener('load', () => { dirty = true; });
 
 /**
  * WHERE THE AIRCRAFT SITS on the map, as a fraction of the map's height:
@@ -445,6 +462,7 @@ function draw(): void {
 
   drawTargets(here, cx, cy, anchorY);
   drawTd(cx, cy, anchorY);
+  drawUav(here, cx, cy, anchorY);
   drawFriend(cx, cy, anchorY);
   drawAircraft();
   drawCue(cx, cy, anchorY);
@@ -997,7 +1015,15 @@ let leadRunId = -1;
 const LEAD_MEMORY_MS = 60_000;
 
 function rememberLead(f: MapFix): void {
-  if (f.runId !== leadRunId) { leadRunId = f.runId; leadTrack.length = 0; }
+  if (f.runId !== leadRunId) {
+    leadRunId = f.runId;
+    leadTrack.length = 0;
+    // A NEW RUN means a simulator that has just been loaded or respawned, and
+    // one that has just loaded has forgotten what its cameras are wanted for.
+    // So what was last said is forgotten here, and the next frame says it
+    // again: the two can never drift apart, however either window is reloaded.
+    camToldWanted = '';
+  }
   const now = performance.now();
   leadTrack.push({
     t: now, lat: f.lat, lon: f.lon,
@@ -1049,6 +1075,197 @@ function leadWas(ms: number): LeadStep | null {
     }
   }
   return leadTrack[leadTrack.length - 1];
+}
+
+/**
+ * ══ THE DRONE OVER THE TARGET ═══════════════════════════════════════════════
+ *
+ * Lion_icon.png, going round and round the truck. It is on THIS SCREEN ONLY —
+ * the simulator knows nothing about it, and there is nothing of it in the
+ * world: it is a mark on the map, like the wingman, and the map flies it.
+ *
+ * WHAT IT GOES ROUND is whichever mark the fix calls a truck — the same one
+ * the weapon is for — so it follows the target wherever the target is put,
+ * and there is nothing to keep in step by hand.
+ *
+ * HOW IT FLIES. --uav-radius is the circle it holds, IN METRES on the ground,
+ * so the circle is a real one: it covers the same land at every range and
+ * draws smaller as the range is stepped out, the way the envelope and the
+ * areas do. --uav-period is how many seconds one lap takes, and --uav-way
+ * which way round: 1 clockwise, -1 the other. It keeps the clock the rest of
+ * the map keeps, so it STOPS DEAD when everything is held and goes on from
+ * where it stood.
+ *
+ * ITS SIZE IS A SIZE ON THE SCREEN, not on the ground — --uav-size is design
+ * px, as the wingman's is. It is a mark saying "the drone is there", and a
+ * mark does not shrink into the distance: the circle it flies grows and
+ * shrinks with the zoom, the drone itself does not.
+ *
+ * It is drawn NOSE FIRST along its own circle, and the map is turned
+ * track-up, so the heading it is drawn at is its own less the map's.
+ */
+function drawUav(f: MapFix, cx: number, cy: number, anchorY: number): void {
+  if (cssNumber('--uav-show', 1) === 0 || !ready(uavIcon)) return;
+  const about = (f.targets ?? []).find((t) => t.kind === 'truck');
+  if (!about) return;
+  const alpha = Math.max(0, Math.min(1, cssNumber('--uav-opacity', 100) / 100));
+  if (alpha <= 0) return;
+
+  let lat: number;
+  let lon: number;
+  let hdg: number;
+  if (f.uav) {
+    // THE SIMULATOR'S OWN DRONE. Once the flight is running the mark is not
+    // flown here at all: it stands wherever the drone in the world stands,
+    // so what is pressed on this screen and what the camera swings onto are
+    // the same aircraft. The --uav-* knobs below are then not consulted —
+    // the drone's circle is set in demo/main.ts, beside the drone itself.
+    lat = f.uav.lat;
+    lon = f.uav.lon;
+    hdg = (f.uav.headingDeg * Math.PI) / 180;
+  } else {
+    // NOTHING FLYING YET, so the map flies one of its own on its own knobs
+    // rather than leave the screen empty.
+    const radius = cssNumber('--uav-radius', 2_000);
+    const period = Math.max(1, cssNumber('--uav-period', 45));
+    const way = cssNumber('--uav-way', 1) < 0 ? -1 : 1;
+    // Where it has got to on its circle, as a bearing from the truck.
+    const turns = nowHeld() / 1000 / period;
+    const th = ((cssNumber('--uav-start', 0) * Math.PI) / 180) + way * turns * Math.PI * 2;
+    const kx = Math.cos((about.lat * Math.PI) / 180);
+    lat = about.lat + (radius * Math.cos(th)) / 111_320;
+    lon = about.lon + (radius * Math.sin(th)) / 111_320 / kx;
+    // Nose along the circle: a quarter turn on from where it stands.
+    hdg = th + (way * Math.PI) / 2;
+  }
+
+  const size = cssNumber('--uav-size', 110) * uiScale();
+  const height = (size * uavIcon.naturalHeight) / uavIcon.naturalWidth;
+  const p = project(lat, lon, cx, cy, anchorY);
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.translate(p.x, p.y);
+  ctx.rotate(hdg - mapHeading);
+  ctx.drawImage(uavIcon, -size / 2, -height / 2, size, height);
+  ctx.restore();
+
+  // CHOSEN: the white ring the lists put round a row and the map puts round
+  // a struck mark. The drone has no second picture of its own, and the ring
+  // is the thing this map already uses to say "this one" where there is no
+  // second picture, so it says it here too — upright, not turned with the
+  // drone, because it belongs to the screen and not to the aircraft.
+  if (picked.has(UAV_MARK)) {
+    const edge = Math.max(1, cssNumber('--row-ring-width', 1.5) * uiScale());
+    ctx.save();
+    ctx.lineWidth = edge;
+    ctx.strokeStyle = cssText('--row-ring-colour', '#FFFFFF').trim();
+    const r = Math.max(size, height) / 2 + edge * 2;
+    ctx.strokeRect(p.x - r, p.y - r, r * 2, r * 2);
+    ctx.restore();
+  }
+  drawUavLabel(f, p, alpha);
+  // The box a press is read against — pushed AFTER the marks, so the drone
+  // wins where it is standing over one. drawTargets empties the list.
+  const reach = Math.max(size, height);
+  markBoxes.push({ id: UAV_MARK, x: p.x - reach / 2, y: p.y - reach / 2, w: reach, h: reach });
+}
+
+/**
+ * ── THE DRONE'S NAME AND HEIGHT ─────────────────────────────────────────────
+ *
+ * Two lines beside the mark: how high it is flying, and what it is called —
+ * the same pair her list writes on its row, written the same way (04′, 24′).
+ *
+ * IT NEVER TURNS WITH THE DRONE. The picture is drawn nose-first along its
+ * circle, so it is forever swinging round; the writing is laid down OUTSIDE
+ * that turn, upright, at a fixed place beside it — half past five on a clock
+ * face laid over the mark, --uav-label-at, and --uav-label-out from its
+ * middle. So the two read as one thing however the drone is pointing, and
+ * the words are never upside down or trailing behind it.
+ *
+ * THE FIGURE IS THE DRONE'S REAL HEIGHT, sent with every fix: what it holds
+ * over the ground the truck stands on, in feet. Set it once, as UAV_ALT_M in
+ * demo/main.ts, and the drone flies at that height and the map writes that
+ * height — one figure, in one place, so the two can never disagree.
+ * --uav-height-per is how many feet one figure on the label stands for, so
+ * 100 writes 2,400 ft as 24; --uav-height-digits pads it, so a low one reads
+ * 04 and not 4. Before the simulator has said anything --uav-height-feet
+ * stands in, the way the other --uav-* knobs do.
+ *
+ * THE TWO LINES ARE DRESSED APART. They are not one block of writing in the
+ * design: the height is larger, medium weight and white; the name smaller,
+ * regular weight and a shade off white, so the figure reads first and the
+ * name does not shout. Each line has its own size, weight and colour.
+ *
+ * Both are STROKED AND THEN FILLED, so they carry the black edge they have
+ * in the artwork and stay readable over any ground under them.
+ */
+function drawUavLabel(f: MapFix, p: { x: number; y: number }, alpha: number): void {
+  if (cssNumber('--uav-label-show', 1) === 0) return;
+  const scale = uiScale();
+  const say = (name: string, fallback: string): string =>
+    cssText(name, fallback).replace(/^["']|["']$/g, '').trim();
+  const face = (weight: number, em: number): string =>
+    `${Math.round(weight)} ${em}px Roboto, system-ui, sans-serif`;
+
+  // The height, as a figure: the drone's own, or the map's stand-in before
+  // the simulator has said anything.
+  const ft = f.uav?.heightFt ?? cssNumber('--uav-height-feet', 2400);
+  const per = Math.max(1, cssNumber('--uav-height-per', 100));
+  const digits = Math.max(0, Math.round(cssNumber('--uav-height-digits', 2)));
+  const figure = String(Math.max(0, Math.round(ft / per))).padStart(digits, '0');
+
+  const lines = [
+    {
+      text: `${figure}${say('--uav-height-mark', '\u2032')}`,
+      em: cssNumber('--uav-height-size', 15) * scale,
+      weight: cssNumber('--uav-height-weight', 500),
+      ink: say('--uav-height-colour', '#FFFFFF'),
+    },
+    {
+      text: say('--uav-name', 'Lion'),
+      em: cssNumber('--uav-name-size', 13) * scale,
+      weight: cssNumber('--uav-name-weight', 400),
+      ink: say('--uav-name-colour', '#DBDBDB'),
+    },
+  ].filter((line) => line.text.length > 0 && line.em >= 1);
+  if (!lines.length) return;
+
+  // Where it hangs: twelve is up and the hours run round the way a clock's
+  // do, so 5.5 is half past five — below the mark and a little to its right.
+  const th = (cssNumber('--uav-label-at', 5.5) / 12) * Math.PI * 2;
+  const out = cssNumber('--uav-label-out', 34) * scale;
+  const x = p.x + Math.sin(th) * out;
+  let y = p.y - Math.cos(th) * out;
+  const gap = cssNumber('--uav-label-gap', 2) * scale;
+  const edge = cssNumber('--uav-label-edge-width', 4) * scale;
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.lineJoin = 'round';                 // or the corners grow spikes
+  ctx.miterLimit = 2;
+  ctx.lineWidth = edge;
+  ctx.strokeStyle = say('--uav-label-edge', '#000000');
+  // Each line is set in its own size, weight and ink, and the next one
+  // follows the one above by ITS OWN height, so changing one size does not
+  // push the other out of place.
+  for (const line of lines) {
+    ctx.font = face(line.weight, line.em);
+    ctx.fillStyle = line.ink;
+    if (edge > 0) ctx.strokeText(line.text, x, y);
+    ctx.fillText(line.text, x, y);
+    y += line.em * 1.15 + gap;
+  }
+  ctx.restore();
+}
+
+/** True while the drone is on screen and flying — the map redraws for it, the
+ *  way it does for the threat rings, so it goes round smoothly. */
+function uavFlying(): boolean {
+  return cssNumber('--uav-show', 1) !== 0 && ready(uavIcon)
+    && (fix?.targets ?? []).some((t) => t.kind === 'truck');
 }
 
 function drawFriend(cx: number, cy: number, anchorY: number): void {
@@ -1165,15 +1382,24 @@ function drawCompass(anchorY: number): void {
  * with the dot drawn at the middle of the picture on that waypoint, so the
  * envelope sits about the point it belongs to.
  *
- * IT IS THE SAME SIZE ON THE SCREEN whatever the zoom — it is a mark, not a
- * piece of land — but it is LAID ON THE GROUND the way a field is: it turns
- * with the map, so that however the aircraft comes at it, it covers the same
- * ground and nothing of it appears to swing round as the aircraft turns.
- * (--zone-with-ground 0 nails it to the screen instead, which is what it did
- * at first and what made part of it seem to move.)
+ * IT IS A PIECE OF LAND, and it is drawn as one: its width is given in
+ * METRES and turned into pixels at the zoom of the moment, so it covers the
+ * same stretch of ground at every range. Step the range out and it draws
+ * smaller, exactly as the fields and the roads under it do.
+ *
+ * It used to be given a size in SCREEN pixels, which made it swell over the
+ * country as the range was stepped out: the same shape that covered fourteen
+ * kilometres at thirty miles covered fifty-seven at a hundred and twenty. An
+ * envelope is a stretch of ground a launcher can reach, and a stretch of
+ * ground does not grow because you looked at more of the map.
+ *
+ * It also TURNS WITH THE MAP, so that however the aircraft comes at it, it
+ * lies over the same land and nothing of it appears to swing round as the
+ * aircraft turns. (--zone-with-ground 0 nails it to the screen instead,
+ * which is what it did at first and what made part of it seem to move.)
  *
  * THE WAYPOINT IS NOT ITS MIDDLE. The envelope's own middle is set a little
- * off the waypoint by --zone-shift-x / --zone-shift-y, so the waypoint passes
+ * off the waypoint by --zone-shift-x-m / --zone-shift-y-m, so the waypoint passes
  * near the middle of the shape without sitting on it — and the line that
  * leaves the middle leaves the middle, not the waypoint, so the two do not
  * read as one thing.
@@ -1188,11 +1414,23 @@ zoneArt.src = './icons/Pink%20Zone.png';
  *  line that leaves it starts exactly there. Null when it is not drawn. */
 let zoneCentre: { x: number; y: number } | null = null;
 
-/** True once the launcher has been struck: the envelope and the line that
- *  reaches it are about a target that is no longer there, so both go. */
+/**
+ * True while the envelope and the line that reaches it have nothing to be
+ * about: the launcher has been struck AND has been let go.
+ *
+ * The strike itself lets it go — a wreck is not something you are still
+ * aiming at — so both the envelope and the line leave the map on the frame
+ * the fire breaks, as they always have.
+ *
+ * CHOOSING IT AGAIN BRINGS THEM BACK, to the very spot they left, because a
+ * struck launcher can be struck again and the envelope is where you have to
+ * be to do it. So it is the CHOICE that decides, not the wreck: press the
+ * mark and the envelope is there to release in, press it again to let it go
+ * and the envelope goes with it.
+ */
 function targetGone(f: MapFix): boolean {
   return (f.targets ?? []).some((t) =>
-    t.kind === 'truck' && t.strike !== false && destroyed.has(t.id));
+    t.kind === 'truck' && t.strike !== false && destroyed.has(t.id) && !picked.has(t.id));
 }
 
 function drawZone(f: MapFix, cx: number, cy: number, anchorY: number): void {
@@ -1207,7 +1445,9 @@ function drawZone(f: MapFix, cx: number, cy: number, anchorY: number): void {
   const at = (f.route ?? []).find((p) => p.name === name);
   if (!at) return;
 
-  const width = cssNumber('--zone-size', 900) * uiScale();
+  // Metres to pixels at this zoom: the envelope breathes with the map, the
+  // same way the areas and the ground itself do.
+  const width = cssNumber('--zone-size-m', 14_360) / metresPerPixel(at.lat);
   const height = (width * zoneArt.naturalHeight) / zoneArt.naturalWidth;
   // Which point of the picture is its MIDDLE — measured off the file, where
   // the dot at its middle sits. That point is what the shift below places,
@@ -1220,9 +1460,11 @@ function drawZone(f: MapFix, cx: number, cy: number, anchorY: number): void {
   // offset — which turns with it, so that too stays over the same ground.
   const ground = cssNumber('--zone-with-ground', 1) !== 0 ? -mapHeading : 0;
   const th = ground + (cssNumber('--zone-turn', 0) * Math.PI) / 180;
-  const scale = uiScale();
-  const ox = cssNumber('--zone-shift-x', 0) * scale;
-  const oy = cssNumber('--zone-shift-y', 0) * scale;
+  // The offset is ground too, or the shape would creep off its own stretch
+  // of land as the range was stepped.
+  const perPixel = metresPerPixel(at.lat);
+  const ox = cssNumber('--zone-shift-x-m', 0) / perPixel;
+  const oy = cssNumber('--zone-shift-y-m', 0) / perPixel;
   zoneCentre = {
     x: p.x + ox * Math.cos(th) - oy * Math.sin(th),
     y: p.y + ox * Math.sin(th) + oy * Math.cos(th),
@@ -1282,6 +1524,85 @@ function drawZoneLine(f: MapFix, cx: number, cy: number, anchorY: number): void 
     ctx.stroke();
   }
   ctx.restore();
+
+  // …and the weapon itself, where it has got to between the two.
+  drawShotArrow(a, b, scale);
+}
+
+/**
+ * A TRIANGLE WITH ITS CORNERS TAKEN OFF, as a path.
+ *
+ * Laid out the way a rounded polygon always is: start at the middle of one
+ * edge, where no corner can reach, and then let each corner be an arc that
+ * comes in off one edge and leaves along the next. `r` is how far back from
+ * the point the arc starts; at 0 it is the plain triangle.
+ */
+function roundTrianglePath(pts: [number, number][], r: number): void {
+  const mid = (i: number, j: number): [number, number] => [
+    (pts[i]![0] + pts[j]![0]) / 2, (pts[i]![1] + pts[j]![1]) / 2,
+  ];
+  ctx.beginPath();
+  const start = mid(0, 1);
+  ctx.moveTo(start[0], start[1]);
+  for (let i = 1; i <= 3; i += 1) {
+    const corner = pts[i % 3]!;
+    const after = mid(i % 3, (i + 1) % 3);
+    ctx.arcTo(corner[0], corner[1], after[0], after[1], r);
+  }
+  ctx.closePath();
+}
+
+/**
+ * ══ THE WEAPON ON ITS WAY, ON THE LINE ══════════════════════════════════════
+ *
+ * From the trigger to the strike a small arrowhead walks the line between the
+ * envelope's middle and the mark, in the line's own pink with the line's own
+ * black casing. It starts at the envelope end and its POINT touches the mark
+ * at the moment the weapon lands — the same moment the figure on the store
+ * reaches nought and the fire breaks over the truck in the other window.
+ *
+ * It is the point that marks the place, not the middle of the shape: the head
+ * is where the weapon has got to, and a weapon is at its nose.
+ *
+ * There is only ever one weapon in the air — the weapons screen arms nothing
+ * between the trigger and the strike — so there is only ever one head.
+ */
+function drawShotArrow(
+  a: { x: number; y: number }, b: { x: number; y: number }, scale: number,
+): void {
+  if (cssNumber('--shot-arrow-show', 1) === 0) return;
+  const t = weaponProgress(performance.now());
+  if (t === null) return;
+
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const run = Math.hypot(dx, dy);
+  if (run < 1) return;                      // the two are on top of each other
+  const ux = dx / run;
+  const uy = dy / run;                      // along the line, towards the mark
+
+  const len = cssNumber('--shot-arrow-len', 13) * scale;
+  const half = (cssNumber('--shot-arrow-width', 15) * scale) / 2;
+  if (len <= 0 || half <= 0) return;
+
+  // The point, and the two corners of the base behind it.
+  const tip: [number, number] = [a.x + dx * t, a.y + dy * t];
+  const base: [number, number] = [tip[0] - ux * len, tip[1] - uy * len];
+  const pts: [number, number][] = [
+    tip,
+    [base[0] - uy * half, base[1] + ux * half],
+    [base[0] + uy * half, base[1] - ux * half],
+  ];
+
+  ctx.save();
+  ctx.lineJoin = 'round';
+  roundTrianglePath(pts, cssNumber('--shot-arrow-round', 3) * scale);
+  ctx.strokeStyle = cssText('--zoneline-casing', '#000000');
+  ctx.lineWidth = cssNumber('--shot-arrow-casing-width', 3) * scale;
+  ctx.stroke();                             // the casing, under the fill
+  ctx.fillStyle = cssText('--zoneline-colour', '#FF5FDC');
+  ctx.fill();
+  ctx.restore();
 }
 
 /**
@@ -1335,6 +1656,30 @@ function targetImage(id: string): HTMLImageElement {
 const picked = new Set<string>();
 
 /**
+ * ONE AT A TIME.
+ *
+ * Pressing a mark chooses it and lets go of whatever was chosen before, so
+ * there is never more than one. Pressing the one already chosen lets it go
+ * and leaves nothing chosen. That holds wherever the press lands — on the
+ * mark itself on the map, on a row of a targets screen, or on a row of the
+ * friends and foes lists — because all three come through here.
+ *
+ * It is a SET rather than a single name because everything that reads it
+ * reads a set: the rings on the rows, the faces of the marks, the badge in
+ * the simulator and the triangle on its compass tape. None of them has to
+ * know that only one is ever in it.
+ */
+function pickMark(id: string): void {
+  const had = picked.has(id);
+  picked.clear();
+  if (!had) picked.add(id);
+  // The camera holds a MARK, and a mark that is no longer chosen is not held:
+  // choosing another lets it go, exactly as pressing the same one twice does.
+  // (Slaving itself is untouched — it was always one mark at a time.)
+  if (slavedId && !picked.has(slavedId)) setSlaved(null);
+}
+
+/**
  * THE SIMULATOR IS TOLD WHENEVER THAT CHANGES.
  *
  * The badge over the truck in the simulator's own window, and in the camera's
@@ -1362,11 +1707,7 @@ canvas.addEventListener('click', (e) => {
   const y = e.clientY - box.top;
   const hit = markAt(x, y);
   if (!hit) { designate(x, y); return; }    // bare ground: put the box there
-  if (picked.has(hit)) picked.delete(hit);
-  else picked.add(hit);
-  // A mark that is let go takes the camera with it, if it was the one being
-  // held: nothing is slaved to a mark that is no longer chosen.
-  if (!picked.has(hit) && slavedId === hit) setSlaved(null);
+  pickMark(hit);
   clearTd();                                // a mark was chosen instead
   dressRowRings();                          // and every list says so too
   tellPicked();                             // and the simulator hears of it
@@ -1470,6 +1811,12 @@ let slavedTd = false;
 function setSlaved(id: string | null): void {
   slavedId = id;
   slavedTd = false;
+  // THE DRONE IS NOT A SPOT. Every other mark stands still, so holding it is
+  // holding the ground it is on; the drone is going round a circle, and a
+  // place sent for it now would be wrong by the next frame. So nothing is
+  // measured here — the simulator is told to hold the drone, and it keeps
+  // the lens on it as it flies. See SlaveOrder.what in demo/mapLink.ts.
+  if (id === UAV_MARK) { tellSlave(null, 'uav'); return; }
   const mark = id ? (fix?.targets ?? []).find((t) => t.id === id) : null;
   tellSlave(mark ? { lat: mark.lat, lon: mark.lon } : null);
 }
@@ -1485,9 +1832,11 @@ function slaveToTd(): void {
 }
 
 /** Say what the camera is to hold, and dress the panel to match. */
-function tellSlave(at: { lat: number; lon: number } | null): void {
-  channel.postMessage({ kind: 'slave', at } satisfies SlaveOrder);
-  const want = at ? PANEL_SLAVED : PANEL_PLAIN;
+function tellSlave(at: { lat: number; lon: number } | null, what?: 'uav'): void {
+  channel.postMessage({ kind: 'slave', at, what } satisfies SlaveOrder);
+  // The key is lit for either kind of hold: a spot on the ground, or the
+  // drone. What is held is a different question from whether anything is.
+  const want = (at || what) ? PANEL_SLAVED : PANEL_PLAIN;
   if (!bottomPanelImg.src.endsWith(want.slice(1))) bottomPanelImg.src = want;
   dirty = true;
 }
@@ -1499,7 +1848,8 @@ function tellSlave(at: { lat: number; lon: number } | null): void {
  * it has been pulled. Everything else happens here, because this is the
  * screen that knows which store was chosen and where the mark stands:
  *
- *   · the store that was blinking on the weapons screen stops — it has gone;
+ *   · the store that was blinking on the weapons screen stops, goes faint,
+ *     and counts the weapon's flight down; at nought it leaves the screen;
  *   · when the weapon lands, the mark is taken off the map for good.
  *
  * THE BURST IS NOT A PICTURE ANY MORE, and it is not on this screen. It is
@@ -1529,9 +1879,11 @@ function noteStruck(ids: string[] | undefined): void {
   if (!ids) return;                       // nothing said: leave it as it is
   const struck = new Set(ids);
   let letGo = false;
+  let moved = false;
   for (const id of struck) {
     if (destroyed.has(id)) continue;
     destroyed.add(id);
+    moved = true;
     if (picked.delete(id)) letGo = true;
     // THE CAMERA IS LEFT WHERE IT IS. If it was slaved to this mark it stays
     // slaved: the fire burns on that very spot for the next few seconds,
@@ -1544,8 +1896,13 @@ function noteStruck(ids: string[] | undefined): void {
   for (const id of destroyed) {
     if (struck.has(id)) continue;
     destroyed.delete(id);
+    moved = true;
     dirty = true;
   }
+  // THE LISTS CARRY THE SAME NEWS AS THE MAP. A row is drawn burnt on the
+  // frame its mark takes fire, and whole again on the frame it comes back,
+  // because both are read from this one tally.
+  if (moved) dressListFaces();
 }
 
 /**
@@ -1553,10 +1910,11 @@ function noteStruck(ids: string[] | undefined): void {
  *
  * The burst is not the map's business: it burns in the world, where the truck
  * stands, and the simulator sees to it. What the map does on the trigger is
- * let the store go: it is the screen that knows which one was chosen.
+ * let the store go — it is the screen that knows which one was chosen — and
+ * then hold it, faint and counting, for the seconds the weapon is in the air.
  */
-function fireWeapon(): void {
-  spendPickedWeapon();
+function fireWeapon(flightS: number): void {
+  spendPickedWeapon(flightS);
 }
 
 /**
@@ -1572,6 +1930,8 @@ function pressSlaveKey(): void {
   // THE BOX FIRST, when one is up: it is the thing just pressed, and taking
   // it is what the press was for. Otherwise the first mark picked out.
   if (tdAt) { slaveToTd(); return; }
+  // The drone, when the drone is what was pressed.
+  if (picked.has(UAV_MARK)) { setSlaved(UAV_MARK); return; }
   const chosen = (fix?.targets ?? []).find((t) => picked.has(t.id));
   if (chosen) setSlaved(chosen.id);
 }
@@ -1646,15 +2006,24 @@ function drawTargets(f: MapFix, cx: number, cy: number, anchorY: number): void {
     // A mark that can be pressed has two faces, and which one it wears is
     // whether it has been pressed. The pressed one is sized on its own.
     //
-    // A STRUCK MARK CAN BE CHOSEN AGAIN, and be struck again — but it keeps
-    // its burnt face while it is chosen, since there is no second artwork
-    // for a wreck that has been picked out. What says it is chosen is a thin
-    // white ring round it, the same ring the lists put round their rows.
-    const chosen = !dead && kind === 'truck' && picked.has(mark.id);
-    const ringed = dead && kind === 'truck' && picked.has(mark.id);
-    const look = chosen ? targetLook('truck', true) : looks[kind];
+    // A STRUCK MARK CAN BE CHOSEN AGAIN, and be struck again — and it has a
+    // FACE OF ITS OWN for it, <id>_after_selected.png: the burnt picture
+    // drawn with the chosen one's brackets, at the chosen one's size.
+    //
+    // Where that file is not in the folder the burnt face is drawn instead
+    // with a thin white ring round it, the same ring the lists put round
+    // their rows — which is what every wreck wore before the picture was
+    // drawn. So a mark whose set of pictures is only half drawn still says
+    // plainly that it is chosen, and is never lost off the map.
+    const wanted = kind === 'truck' && picked.has(mark.id);
+    const deadChosen = dead && wanted && ready(targetImage(`${mark.id}_after_selected`));
+    const chosen = wanted && !dead;
+    const ringed = dead && wanted && !deadChosen;
+    const look = chosen || deadChosen ? targetLook('truck', true) : looks[kind];
     if (!look.show) continue;
-    const face = dead ? `${mark.id}_after` : chosen ? `${mark.id}_selected` : mark.id;
+    const face = deadChosen ? `${mark.id}_after_selected`
+      : dead ? `${mark.id}_after`
+        : chosen ? `${mark.id}_selected` : mark.id;
     // Every face is asked for the first time this mark is drawn, so the one
     // it is not wearing is already in hand when it is pressed or struck and
     // the swap happens in the same frame.
@@ -1663,6 +2032,9 @@ function drawTargets(f: MapFix, cx: number, cy: number, anchorY: number): void {
       targetImage(chosen ? mark.id : `${mark.id}_selected`);
       if (strikeable) targetImage(`${mark.id}_after`);
     }
+    // Both of the wreck's faces are asked for while the mark is still whole,
+    // so neither the strike nor a press afterwards waits on a file.
+    if (kind === 'truck' && strikeable) targetImage(`${mark.id}_after_selected`);
     if (!ready(img)) continue;
     const height = (look.width * img.naturalHeight) / img.naturalWidth;
     const p = project(mark.lat, mark.lon, cx, cy, anchorY);
@@ -2120,9 +2492,10 @@ function ringCentre(): { x: number; y: number; r: number } | null {
  * THE BEAM OUT OF THE NOSE, Ellipse.png.
  *
  * The artwork is a wedge with its point at the BOTTOM of the picture and its
- * wide end at the top, so it is laid down with that point on the aircraft's
- * nose and the rest reaching away ahead of it. Measured off the file, the
- * point sits 47.3% across and at the very bottom — that is the pair of
+ * wide end at the top, so it is laid down with that point on the MIDDLE of
+ * the aircraft symbol and the rest reaching away ahead of it — the aircraft
+ * itself goes down after and covers the point. Measured off the file, the
+ * point sits 50% across and at the very bottom — that is the pair of
  * anchor numbers below, and the one thing to re-measure if the file changes.
  *
  * It is drawn FIRST, before the disc, the ring and the aircraft, so all three
@@ -2138,11 +2511,12 @@ function drawBeam(size: number, scale: number): void {
   if (alpha <= 0) return;
   const length = cssNumber('--beam-length', 1_000) * scale;
   const width = (length * beamIcon.naturalWidth) / beamIcon.naturalHeight;
-  const ax = cssNumber('--beam-anchor-x', 47.3) / 100;
+  const ax = cssNumber('--beam-anchor-x', 50) / 100;
   // How far ahead of the middle of the symbol the point of the beam sits.
-  // Given as a share of the aircraft's own width, so it stays on the nose
-  // when the symbol is resized.
-  const nose = (size * cssNumber('--beam-nose', 32)) / 100;
+  // Given as a share of the aircraft's own width, so it keeps its place when
+  // the symbol is resized. It is 0 by default: the point sits on the MIDDLE
+  // of the symbol, not out at the nose, so the aircraft covers the apex.
+  const nose = (size * cssNumber('--beam-nose', 0)) / 100;
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.rotate((cssNumber('--beam-turn', 0) * Math.PI) / 180);
@@ -2358,6 +2732,26 @@ interface ListRows {
 /** The nine of Cobra 1, in the order every list puts them in. */
 const COBRA_1 = ['BN222', 'TR383', 'GE867', 'BN799', 'TR113', 'GE167', 'BN229', 'TR313', 'TR370'];
 
+/**
+ * THE FRIENDS, in the order their list puts them in — and which of them this
+ * map has a mark for.
+ *
+ * A row's name is the name of the MARK it stands for: the mark's id without
+ * its _icon. Press the row and it is the very same press as on the mark
+ * itself — the same pickMark, so the same one-at-a-time choosing, the same
+ * white ring, and the same Slave key waiting underneath.
+ *
+ * Only the DRONE has a mark of its own among the friends, so only the
+ * drone's row answers. The rest are written as '' — the list draws them, the
+ * map has nothing to pick out for them, and a press on one does nothing at
+ * all. Give one of them a mark and writing its name in here is the whole of
+ * the wiring.
+ *
+ *   Cobra 2 · Lion · Tiger · Snake 1 · Snake 2 · Snake 3 · Snake 4 · Star · Moon
+ *              ↑ the drone
+ */
+const COBRA_2 = ['', targetName(UAV_MARK), '', '', '', '', '', '', ''];
+
 const LIST_ROWS: ListRows[] = [
   // The targets screen, in the five-way arrangement and in the bar.
   { src: 'list_5_layout_all.png', w: 2284, x: 70, width: 2160,
@@ -2370,6 +2764,14 @@ const LIST_ROWS: ListRows[] = [
     top: 232, height: 416, pitch: 424, radius: 28, names: COBRA_1 },
   { src: 'Friend and Foes_list_open.png', w: 448, x: 16, width: 416,
     top: 232, height: 416, pitch: 424, radius: 28, names: COBRA_1.slice(0, 4) },
+  // The friends, under the foes in that same picture — a SECOND block of
+  // rows in one list, which is why a file may appear here more than once.
+  // Four of them are drawn whole there; the fifth is cut off by the foot.
+  { src: 'Friend and Foes_list_open.png', w: 448, x: 16, width: 416,
+    top: 2340, height: 416, pitch: 424, radius: 28, names: COBRA_2.slice(0, 4) },
+  // And the friends at full length, when the foes are shut.
+  { src: 'Friend_FULL_list_open.png', w: 448, x: 16, width: 416,
+    top: 228, height: 416, pitch: 424, radius: 28, names: COBRA_2 },
 ];
 
 /** The target a file name stands for: BN222_icon -> BN222. */
@@ -2377,10 +2779,92 @@ function targetName(id: string): string {
   return id.replace(/_icon$/, '');
 }
 
-/** Which list, if any, a picture is — by the end of its own file name. */
-function listRowsFor(img: HTMLImageElement): ListRows | undefined {
+/**
+ * ══ THE BURNT FACE OF A LIST ════════════════════════════════════════════════
+ *
+ * A mark that has been struck wears its burnt face on the map, and it has to
+ * wear it in the lists too. The lists are PICTURES, so nothing is pasted over
+ * one: each list is drawn a SECOND TIME with that row already burnt, and all
+ * that happens here is that the picture is swapped. Nothing can land a pixel
+ * out of place that way, and the burnt row looks exactly as it was drawn —
+ * the icon greyed and struck through, the rest of the row untouched.
+ *
+ * `mark` is the row the second picture shows burnt, and the file names say so
+ * as well (…_bn222.png). Draw a burnt face for another row and it goes in
+ * here beside these. A list with no face for the mark that has been struck
+ * simply stays whole, and a struck mark with no face anywhere changes nothing
+ * in the lists — so a half-drawn set is never broken, only quiet.
+ *
+ * A burnt face must be the SAME PICTURE with one row repainted: same size,
+ * same rows in the same places. Everything below — which row a press lands
+ * on, where a ring is drawn, where the headings sit — is measured off the
+ * whole face and used for both.
+ */
+const LIST_BURNT: { whole: string; mark: string; burnt: string }[] = [
+  { whole: 'list_5_layout_all.png', mark: 'BN222',
+    burnt: 'list_5_layout_all_bn222.png' },
+  { whole: 'list_3_layout.png', mark: 'BN222',
+    burnt: 'list_3_layout_bn222.png' },
+  { whole: 'Foes_FULL_list_open.png', mark: 'BN222',
+    burnt: 'Foes_FULL_list_open_bn222.png' },
+  { whole: 'Friend and Foes_list_open.png', mark: 'BN222',
+    burnt: 'Friend and Foes_list_open_bn222.png' },
+];
+
+/** The bare file name a picture wears: './icons/a%20b.png' -> 'a b.png'. */
+function listFile(img: HTMLImageElement): string {
   const src = decodeURIComponent(img.getAttribute('src') ?? '');
-  return LIST_ROWS.find((l) => src.endsWith(l.src));
+  return src.slice(src.lastIndexOf('/') + 1);
+}
+
+/** Where a list's file is, written as the markup writes it. */
+function listSrc(file: string): string {
+  return `./icons/${encodeURIComponent(file)}`;
+}
+
+/** The whole-faced name of a list file, burnt or not — the name the rows,
+ *  the slots and everything else below know it by. */
+function listWhole(file: string): string {
+  return LIST_BURNT.find((s) => s.burnt === file)?.whole ?? file;
+}
+
+/** The face that file should be wearing now: burnt once its mark is struck,
+ *  and whole again the moment the mark is. */
+function listFace(file: string): string {
+  const whole = listWhole(file);
+  const swap = LIST_BURNT.find((s) => s.whole === whole && destroyed.has(`${s.mark}_icon`));
+  return swap ? swap.burnt : whole;
+}
+
+/**
+ * EVERY LIST ON SCREEN PUT INTO THE FACE IT SHOULD BE WEARING.
+ *
+ * Asked wherever the struck tally can have changed, and again after a screen
+ * has been built — a pane made afresh carries the face written into
+ * PANE_KINDS, which is always the whole one.
+ *
+ * It walks every picture in the page and leaves alone everything that is not
+ * a list: a file no swap knows is already wearing its own face.
+ */
+function dressListFaces(): void {
+  for (const img of document.querySelectorAll<HTMLImageElement>('img')) {
+    const file = listFile(img);
+    const want = listFace(file);
+    if (want !== file) img.src = listSrc(want);
+  }
+}
+
+/**
+ * The blocks of rows a picture holds — by its own file name, whole or burnt.
+ *
+ * It is a LIST of them, not one: the half-and-half picture is two lists in
+ * one file, the foes above and the friends below, and nothing about them
+ * lines up into a single run of rows. Empty where the picture is not a list
+ * at all.
+ */
+function listRowsFor(img: HTMLImageElement): ListRows[] {
+  const file = listWhole(listFile(img));
+  return LIST_ROWS.filter((l) => l.src === file);
 }
 
 /**
@@ -2399,8 +2883,8 @@ function dressRowRings(): void {
   const chosen = new Set([...picked].map(targetName));
   if (!chosen.size) return;
   for (const img of document.querySelectorAll<HTMLImageElement>('img')) {
-    const list = listRowsFor(img);
-    if (!list) continue;
+    const blocks = listRowsFor(img);
+    if (!blocks.length) continue;
     const parent = img.parentElement;
     if (!parent) continue;
     // A SHUT LIST HAS NO ROWS TO RING. It may still be in the page, keeping
@@ -2413,48 +2897,54 @@ function dressRowRings(): void {
     const box = img.getBoundingClientRect();
     if (!box.width) continue;
     const frame = parent.getBoundingClientRect();
-    const s = box.width / list.w;            // drawn pixels per file pixel
-    list.names.forEach((name, i) => {
-      if (!chosen.has(name)) return;
-      const ring = document.createElement('div');
-      ring.className = 'rowRing';
-      ring.style.left = `${(box.left - frame.left + list.x * s).toFixed(2)}px`;
-      ring.style.top = `${(box.top - frame.top + (list.top + list.pitch * i) * s).toFixed(2)}px`;
-      ring.style.width = `${(list.width * s).toFixed(2)}px`;
-      ring.style.height = `${(list.height * s).toFixed(2)}px`;
-      ring.style.borderRadius = `${(list.radius * s).toFixed(2)}px`;
-      parent.appendChild(ring);
-    });
+    for (const list of blocks) {
+      const s = box.width / list.w;          // drawn pixels per file pixel
+      list.names.forEach((name, i) => {
+        // A row with no name stands for no mark and can never be chosen.
+        if (!name || !chosen.has(name)) return;
+        const ring = document.createElement('div');
+        ring.className = 'rowRing';
+        ring.style.left = `${(box.left - frame.left + list.x * s).toFixed(2)}px`;
+        ring.style.top = `${(box.top - frame.top + (list.top + list.pitch * i) * s).toFixed(2)}px`;
+        ring.style.width = `${(list.width * s).toFixed(2)}px`;
+        ring.style.height = `${(list.height * s).toFixed(2)}px`;
+        ring.style.borderRadius = `${(list.radius * s).toFixed(2)}px`;
+        parent.appendChild(ring);
+      });
+    }
   }
 }
 
-/** A press on a list: the row it landed on is picked out, or let go. */
+/** A press on a list: the row it landed on is picked out, or let go. The
+ *  picture may hold more than one block of rows, so each is asked in turn
+ *  and the first that owns the press answers it. */
 function pressListRow(e: MouseEvent): boolean {
   const img = e.currentTarget as HTMLImageElement;
-  const list = listRowsFor(img);
-  if (!list) return false;
   const box = img.getBoundingClientRect();
   if (!box.width) return false;
-  const s = box.width / list.w;
-  const x = (e.clientX - box.left) / s;
-  const y = (e.clientY - box.top) / s;
-  if (x < list.x || x > list.x + list.width) return false;
-  const n = Math.floor((y - list.top) / list.pitch);
-  if (n < 0 || n >= list.names.length) return false;
-  if (y - list.top - list.pitch * n > list.height) return false;   // in the gap
-  const id = `${list.names[n]}_icon`;
-  if (picked.has(id)) picked.delete(id);
-  else picked.add(id);
-  dressRowRings();
-  tellPicked();
-  dirty = true;                       // the map's own mark changes face too
-  return true;
+  for (const list of listRowsFor(img)) {
+    const s = box.width / list.w;
+    const x = (e.clientX - box.left) / s;
+    const y = (e.clientY - box.top) / s;
+    if (x < list.x || x > list.x + list.width) continue;
+    const n = Math.floor((y - list.top) / list.pitch);
+    if (n < 0 || n >= list.names.length) continue;
+    if (y - list.top - list.pitch * n > list.height) continue;     // in the gap
+    const name = list.names[n];
+    if (!name) return false;          // a row this map has no mark for
+    pickMark(`${name}_icon`);
+    dressRowRings();
+    tellPicked();
+    dirty = true;                     // the map's own mark changes face too
+    return true;
+  }
+  return false;
 }
 
 /** Every list picture on screen answers a press, however it got there. */
 function wireListPresses(): void {
   for (const img of document.querySelectorAll<HTMLImageElement>('img')) {
-    if (!listRowsFor(img) || img.dataset.rowsWired) continue;
+    if (!listRowsFor(img).length || img.dataset.rowsWired) continue;
     img.dataset.rowsWired = '1';
     img.style.pointerEvents = 'auto';
     img.style.cursor = 'pointer';
@@ -2503,9 +2993,9 @@ const BAR_W = 408;         // and how wide it is drawn there
 const BAR_H = 176;         // the slot's own height
 const LIST_W = 448;        // every list is this wide
 const SLOT_Y = 20;         // the first slot starts this far down a list
-const LIST_BOTH = { src: './icons/Friend%20and%20Foes_list_open.png' };
-const LIST_FRIENDS_FULL = { src: './icons/Friend_FULL_list_open.png' };
-const LIST_FOES_FULL = { src: './icons/Foes_FULL_list_open.png' };
+const LIST_BOTH = 'Friend and Foes_list_open.png';
+const LIST_FRIENDS_FULL = 'Friend_FULL_list_open.png';
+const LIST_FOES_FULL = 'Foes_FULL_list_open.png';
 
 /**
  * WHERE THE SLOTS ARE — FOUND IN THE PICTURE, NOT WRITTEN DOWN HERE.
@@ -2527,7 +3017,10 @@ const LIST_FOES_FULL = { src: './icons/Foes_FULL_list_open.png' };
  */
 const listSlots = new Map<string, number[]>();
 function slotsIn(img: HTMLImageElement): number[] {
-  const key = img.getAttribute('src') ?? '';
+  // Kept against the WHOLE face: a burnt face is the same picture with one
+  // row repainted, so its slots are the same slots, and reading them again
+  // the instant the picture is swapped would only risk reading nothing.
+  const key = listWhole(listFile(img));
   const had = listSlots.get(key);
   if (had) return had;
   const w = img.naturalWidth;
@@ -2591,8 +3084,9 @@ function dressLists(): void {
   friendsBar.classList.toggle('is-shut', friendListOpen);
   listImg.classList.toggle('is-shut', neither);
   if (!neither) {
-    const want = both ? LIST_BOTH.src
-      : friendListOpen ? LIST_FRIENDS_FULL.src : LIST_FOES_FULL.src;
+    // …wearing whichever face the struck tally calls for.
+    const want = listSrc(listFace(both ? LIST_BOTH
+      : friendListOpen ? LIST_FRIENDS_FULL : LIST_FOES_FULL));
     if (!listImg.src.endsWith(want.slice(1))) listImg.src = want;
     listImg.alt = both ? 'Foes and friends' : friendListOpen ? 'Friends' : 'Foes';
   }
@@ -2696,6 +3190,9 @@ function applyLayout(next: LayoutId): void {
   screenEl.classList.toggle('is-side', next === 'side');
   resize();      // the canvas, at the map's new size
   fitButtons();  // and everything laid out inside it
+  // A camera screen may have come on show or gone off it, so the simulator
+  // is told afresh what its two cameras are wanted for.
+  tellCamSource();
   draw();
 }
 
@@ -2771,13 +3268,15 @@ new Image().src = LOCATION_MIDDLE;
 /**
  * ══ THE WEAPONS SCREEN ══════════════════════════════════════════════════════
  *
- * weapon_5_layout.png carries eight stores — six 84s down the middle and an AA
- * at each wingtip. One of them is the SELECTED one and blinks slowly; pressing
- * another hands the blink over to it. That is the whole of it: nothing else in
- * the simulator looks at which one is chosen.
+ * weapon_5_layout.png carries ten stores: a pair of 84s at the top and another
+ * pair at the bottom, FOUR smaller 82s across the middle between them, and an
+ * AA at each wingtip. One of them is the SELECTED one and blinks slowly;
+ * pressing another hands the blink over to it. That is the whole of it:
+ * nothing else in the simulator looks at which one is chosen.
  *
- * HOW THE BLINK IS DONE. There are two more files — weapon_84.png and
- * weapon_AA.png — each holding ONE store on nothing, cut to its own shape. A
+ * HOW THE BLINK IS DONE. There is one more file per KIND of store —
+ * weapon_84.png, weapon_82.png, weapon_AA.png — each holding ONE store on
+ * nothing, cut to its own shape. A
  * copy of the right one is laid exactly over the store that is selected, and
  * its brightness is breathed up and down. Because the picture is the shape
  * itself and not a rectangle cut out of the screen, there is no edge to catch
@@ -2791,27 +3290,86 @@ new Image().src = LOCATION_MIDDLE;
  */
 /** A shape file, and where the GREEN of the shape sits on its own canvas. */
 interface StoreArt { src: string; cw: number; chh: number; x: number; w: number; y: number; h: number }
-const WEAPON_ART: Record<'84' | 'AA', StoreArt> = {
+type StoreKind = '84' | '82' | 'AA';
+const WEAPON_ART: Record<StoreKind, StoreArt> = {
   '84': { src: './icons/weapon_84.png', cw: 139, chh: 496, x: 20, w: 99, y: 5, h: 485 },
+  '82': { src: './icons/weapon_82.png', cw: 98, chh: 346, x: 14, w: 69, y: 4, h: 338 },
   'AA': { src: './icons/weapon_AA.png', cw: 126, chh: 569, x: 7, w: 112, y: 5, h: 558 },
 };
-interface WeaponStore { id: string; art: '84' | 'AA'; x: number; y: number; w: number; h: number }
+interface WeaponStore { id: string; art: StoreKind; x: number; y: number; w: number; h: number }
 const WEAPON_STORES: WeaponStore[] = [
-  // 1-2: the top pair of 84s          3-4: the middle pair
+  // 1-2: the top pair of 84s
   { id: '84_top_left',  art: '84', x: 39.011, y: 19.220, w: 4.334, h: 21.235 },
   { id: '84_top_right', art: '84', x: 56.436, y: 19.220, w: 4.334, h: 21.235 },
-  { id: '84_mid_left',  art: '84', x: 39.011, y: 42.820, w: 4.334, h: 21.235 },
-  { id: '84_mid_right', art: '84', x: 56.436, y: 42.820, w: 4.334, h: 21.235 },
-  // 5-6: the bottom pair               7-8: the two AA at the wingtips
+  // 3-6: the four 82s across the middle, left to right. They stand where the
+  // middle pair of 84s used to, and each is drawn at the size the file draws
+  // it — a little over two thirds the height of an 84.
+  { id: '82_mid_1', art: '82', x: 37.303, y: 46.410, w: 3.021, h: 14.799 },
+  { id: '82_mid_2', art: '82', x: 43.783, y: 46.410, w: 3.021, h: 14.799 },
+  { id: '82_mid_3', art: '82', x: 52.890, y: 46.410, w: 3.021, h: 14.799 },
+  { id: '82_mid_4', art: '82', x: 59.370, y: 46.410, w: 3.021, h: 14.799 },
+  // 7-8: the bottom pair               9-10: the two AA at the wingtips
   { id: '84_low_left',  art: '84', x: 39.011, y: 66.418, w: 4.334, h: 21.235 },
   { id: '84_low_right', art: '84', x: 56.436, y: 66.418, w: 4.334, h: 21.235 },
   { id: 'AA_left',      art: 'AA', x: 27.566, y: 41.331, w: 4.895, h: 24.387 },
   { id: 'AA_right',     art: 'AA', x: 67.540, y: 41.331, w: 4.895, h: 24.387 },
 ];
 
+/**
+ * WHICH STORES SHARE A HOTSPOT, and the order a press walks through them.
+ *
+ * Eight of the ten answer for themselves. THE FOUR 82s DO NOT: they are the
+ * small ones, they stand in pairs with barely a finger's width between the
+ * two of a pair, and a hotspot drawn round one of them alone would be a
+ * sliver to hit. So each PAIR is one hotspot — the two stores and the gap
+ * between them — and pressing it walks through the pair: the OUTER one of
+ * the two first, the one nearer the wingtip, and the INNER one on the next
+ * press, then round again.
+ *
+ * Outer first on both sides, which is why the right pair reads right-then-
+ * left and the left pair left-then-right: the aircraft is symmetrical, and
+ * so is the walk. A store that has been fired is stepped over.
+ */
+const WEAPON_HIT_GROUPS: string[][] = [
+  ['84_top_left'], ['84_top_right'],
+  ['82_mid_1', '82_mid_2'],          // the left pair:  outer, then inner
+  ['82_mid_4', '82_mid_3'],          // the right pair: outer, then inner
+  ['84_low_left'], ['84_low_right'],
+  ['AA_left'], ['AA_right'],
+];
+/** The same, as places in WEAPON_STORES rather than names. */
+const WEAPON_HIT_ORDER: number[][] = WEAPON_HIT_GROUPS.map(
+  (group) => group.map((id) => WEAPON_STORES.findIndex((s) => s.id === id)),
+);
+
+/**
+ * WHAT EACH KIND OF STORE IS CALLED on the simulator's HUD. The S number
+ * after it is the store's PLACE IN THE LIST ABOVE, counted from 1 — the
+ * aircraft's own order, top pair first and the two AAs last — so the leftmost
+ * of the four 82s is S3 and the right AA is S10. The number is nowhere in the
+ * artwork: it is the order, and the order is here.
+ */
+const WEAPON_CALL: Record<StoreKind, string> = { '84': 'MK-84', '82': 'MK-82', AA: 'AA' };
+
+/** A store as the HUD writes it: 'MK-82-S3'. */
+function weaponCueName(index: number): string | null {
+  const store = WEAPON_STORES[index];
+  return store ? `${WEAPON_CALL[store.art]}-S${index + 1}` : null;
+}
+
 /** Blink the chosen store in ONE weapons screen. Each screen keeps its own
  *  choice, so the same screen may be shown twice and chosen differently. */
-interface WeaponLive { lamps: HTMLImageElement[]; gones: HTMLElement[]; picked: number }
+interface WeaponLive {
+  lamps: HTMLImageElement[]; gones: HTMLElement[];
+  /** The four white corners that stand round whichever store is chosen. */
+  td: HTMLElement[];
+  /** The countdown that stands on a store while its weapon is in the air. */
+  timers: HTMLElement[];
+  /** One hotspot per GROUP of stores — see WEAPON_HIT_GROUPS, where the
+   *  four 82s share two of them between the four. */
+  hits: HTMLButtonElement[];
+  picked: number;
+}
 const weaponLive = new WeakMap<HTMLElement, WeaponLive>();
 
 /**
@@ -2825,7 +3383,59 @@ const weaponLive = new WeakMap<HTMLElement, WeaponLive>();
 const spent = new Set<string>();
 
 /**
- * HOW A SPENT STORE IS TAKEN OFF THE SCREEN. The eight stores are part of the
+ * THE STORES THAT ARE IN THE AIR, by id, against the moment they land —
+ * performance.now() in milliseconds.
+ *
+ * A store does not leave the screen on the trigger. The weapon has a flight
+ * to make, and for those seconds the store is BOTH gone and not gone: it is
+ * spent, so it has stopped blinking and cannot be chosen again, but it is
+ * still drawn — faint, with the seconds to the strike standing on it. It
+ * leaves the screen at nought, which is the moment the truck takes the hit.
+ *
+ * THE CLOCK IS THE SIMULATOR'S, not the map's: the flight time comes over
+ * with the trigger (FireOrder.flight), so the figure here runs out on the
+ * same breath the fire breaks over the truck in the other window.
+ *
+ * It is a plain wall clock, as the simulator's own strike timer is, so
+ * holding the map does not hold the weapon up.
+ */
+interface WeaponInAir {
+  /** performance.now() at the trigger. */
+  from: number;
+  /** performance.now() at the strike. */
+  at: number;
+}
+const falling = new Map<string, WeaponInAir>();
+
+/**
+ * HOW FAR ALONG ITS FLIGHT the weapon in the air is: 0 at the trigger, 1 at
+ * the strike, null when nothing is down. It is what moves the arrowhead up
+ * the line from the envelope to the mark, and it is read off the SAME count
+ * that writes the seconds on the store, so the head reaches the mark on the
+ * breath the figure reaches nought.
+ */
+function weaponProgress(now: number): number | null {
+  for (const air of falling.values()) {
+    const span = air.at - air.from;
+    if (span <= 0) return 1;
+    return Math.max(0, Math.min(1, (now - air.from) / span));
+  }
+  return null;
+}
+
+/** How long the weapon flies when the trigger said nothing, in seconds. */
+const WEAPON_FLIGHT_FALLBACK_S = 10;
+
+/** The seconds left on a store, as the screen writes them: mm:ss. */
+function weaponClockFace(msLeft: number): string {
+  const left = Math.max(0, Math.ceil(msLeft / 1000));
+  const mm = String(Math.floor(left / 60)).padStart(2, '0');
+  const ss = String(left % 60).padStart(2, '0');
+  return `${mm}:${ss}`;
+}
+
+/**
+ * HOW A SPENT STORE IS TAKEN OFF THE SCREEN. The stores are part of the
  * screen's own picture, so one of them cannot simply be hidden — the picture
  * is one file. Instead the store's SHAPE is laid over it in the colour of the
  * screen's own background (--weapon-gone-colour, the flat green-black the
@@ -2836,41 +3446,187 @@ const spent = new Set<string>();
 function dressWeaponPane(pane: HTMLElement): void {
   const live = weaponLive.get(pane);
   if (!live) return;
+  const now = performance.now();
   WEAPON_STORES.forEach((store, i) => {
     const gone = spent.has(store.id);
+    const lands = falling.get(store.id)?.at;
+    // IN THE AIR: the stencil is there, but only part way, so the store is
+    // still seen through it — spent, and plainly on its way.
     live.gones[i]?.classList.toggle('is-off', !gone);
-    // A spent store cannot be chosen: its hotspot stops answering.
-    const hit = pane.querySelectorAll<HTMLButtonElement>('.weaponStore')[i];
-    if (hit) hit.disabled = gone;
+    live.gones[i]?.classList.toggle('is-falling', lands !== undefined);
+    const timer = live.timers[i];
+    if (timer) {
+      timer.classList.toggle('is-on', lands !== undefined);
+      if (lands !== undefined && timer.firstElementChild) {
+        timer.firstElementChild.textContent = weaponClockFace(lands - now);
+      }
+    }
   });
-  // If the one that was blinking is the one that has gone, nothing blinks.
-  if (live.picked >= 0 && spent.has(WEAPON_STORES[live.picked]!.id)) setWeaponPicked(pane, -1);
+  // A hotspot stops answering when there is nothing left under it to choose —
+  // which for a pair of 82s means BOTH of them have gone.
+  WEAPON_HIT_ORDER.forEach((order, g) => {
+    const hit = live.hits[g];
+    if (hit) hit.disabled = order.every((i) => spent.has(WEAPON_STORES[i]!.id));
+  });
+  // THE BOX IS HANDED ON AT THE STRIKE, NOT AT THE TRIGGER. While the weapon
+  // is in the air the store that let it go KEEPS the box — faint, counting,
+  // and no longer blinking — because that is the store this screen is still
+  // about. Only when it lands, and leaves the screen for good, do the box
+  // and the blink move to the next store still aboard.
+  const chosen = WEAPON_STORES[live.picked]?.id;
+  if (chosen !== undefined && spent.has(chosen) && !falling.has(chosen)) {
+    setWeaponPicked(pane, nextLiveWeapon(live.picked));
+  } else {
+    showWeaponPick(live);
+  }
+}
+
+/**
+ * WHAT THE SIMULATOR'S HUD IS TO PRINT in its corner: the store the box is
+ * standing on, and the seconds under it if that store's weapon is in the air.
+ *
+ * It is worked out from the SCREEN, not held beside it, so there is no second
+ * copy of the choice to fall out of step with the first. Said only when it
+ * changes, which is when a store is chosen, fired, or lands — so the channel
+ * carries about one word a second while a weapon is down and none at all the
+ * rest of the time, though this is called every frame.
+ *
+ * With no weapons screen open there is no choice to speak of, and the HUD
+ * prints nothing: the choice lives on that screen and nowhere else.
+ */
+let cueSaid = '';
+let cueRunSaid = -1;
+function tellWeaponCue(): void {
+  let store: string | null = null;
+  let clock: string | null = null;
+  for (const pane of document.querySelectorAll<HTMLElement>('.weaponPane')) {
+    const live = weaponLive.get(pane);
+    if (!live || live.picked < 0) continue;
+    store = weaponCueName(live.picked);
+    const lands = falling.get(WEAPON_STORES[live.picked]!.id)?.at;
+    if (lands !== undefined) clock = weaponClockFace(lands - performance.now());
+    break;
+  }
+  const said = `${store}|${clock}`;
+  if (said === cueSaid) return;
+  cueSaid = said;
+  channel.postMessage({ kind: 'cue', store, clock } satisfies WeaponCueOrder);
+}
+
+/**
+ * THE NEXT STORE THAT IS STILL THERE, walking on from `from` in the order the
+ * stores are numbered and coming round at the end. `from` itself is never the
+ * answer, and -1 means the aircraft is empty.
+ */
+function nextLiveWeapon(from: number): number {
+  for (let step = 1; step <= WEAPON_STORES.length; step += 1) {
+    const i = (from + step) % WEAPON_STORES.length;
+    if (!spent.has(WEAPON_STORES[i]!.id)) return i;
+  }
+  return -1;
+}
+
+/** The store a screen opens on: whichever one is in the air, since that is
+ *  the one the box is standing on everywhere else; failing that --weapon-start,
+ *  or the next one still there if that one has already been fired. */
+function weaponStartIndex(): number {
+  const air = WEAPON_STORES.findIndex((store) => falling.has(store.id));
+  if (air >= 0) return air;
+  const start = Math.round(cssNumber('--weapon-start', 3)) - 1;
+  const id = WEAPON_STORES[start]?.id;
+  return id !== undefined && spent.has(id) ? nextLiveWeapon(start) : start;
+}
+
+/**
+ * THE LAMP AND THE BOX, PUT WHERE THE CHOICE SAYS and nowhere else.
+ *
+ * The two do not always stand together. The BOX says WHICH STORE THIS SCREEN
+ * IS ABOUT and it stays on a store from the moment it is chosen until the
+ * moment it leaves the screen — through the whole flight of its weapon. The
+ * BLINK says WHAT IS ARMED, and a store whose weapon is already in the air is
+ * not: so between the trigger and the strike the box stands on a store that
+ * does not blink, which is the whole of what that pause looks like.
+ */
+function showWeaponPick(live: WeaponLive): void {
+  live.lamps.forEach((lamp, i) => lamp.classList.toggle(
+    'is-off', i !== live.picked || spent.has(WEAPON_STORES[i]!.id),
+  ));
+  placeWeaponTd(live, WEAPON_STORES[live.picked] ?? null);
 }
 
 function setWeaponPicked(pane: HTMLElement, index: number): void {
   const live = weaponLive.get(pane);
   if (!live) return;
-  // A store that has been fired is not there to be chosen.
-  if (index >= 0 && spent.has(WEAPON_STORES[index]?.id ?? '')) return;
+  // A store that has gone for good is not there to be chosen. One still IN
+  // THE AIR is a different matter: it keeps the box it was chosen with.
+  const id = WEAPON_STORES[index]?.id;
+  if (index >= 0 && id !== undefined && spent.has(id) && !falling.has(id)) return;
   live.picked = index;
-  live.lamps.forEach((lamp, i) => lamp.classList.toggle('is-off', i !== index));
+  showWeaponPick(live);
 }
 
 /**
  * THE TRIGGER'S SIDE OF THE WEAPONS SCREEN: the store that was chosen is let
- * go. It is taken off every weapons screen on the map, and nothing blinks
- * until another is pressed.
+ * go. It stops blinking at once — it is not armed any more — but IT KEEPS THE
+ * BOX, and stands there faint and counting until its weapon lands. The box
+ * and the blink move on at the strike, in dressWeaponPane, to the next store
+ * still aboard: the walk is the order the stores are numbered in and it comes
+ * round at the end, so one shot follows another without anything being
+ * pressed between. Only an empty aircraft leaves nothing blinking.
+ *
+ * WITH A WEAPON ALREADY IN THE AIR THE TRIGGER SAYS NOTHING. Nothing is armed
+ * between the trigger and the strike — that is what the box standing on a
+ * store that does not blink means — so there is nothing for it to let go.
  */
-function spendPickedWeapon(): string | null {
+function spendPickedWeapon(flightS: number): string | null {
   const panes = [...document.querySelectorAll<HTMLElement>('.weaponPane')];
   let id: string | null = null;
   for (const pane of panes) {
     const live = weaponLive.get(pane);
-    if (live && live.picked >= 0) { id = WEAPON_STORES[live.picked]!.id; break; }
+    if (!live || live.picked < 0) continue;
+    const chosen = WEAPON_STORES[live.picked]!.id;
+    if (spent.has(chosen)) continue;       // its weapon is already in the air
+    id = chosen;
+    break;
   }
-  if (id) spent.add(id);
-  for (const pane of panes) { setWeaponPicked(pane, -1); dressWeaponPane(pane); }
+  if (!id) return null;
+  spent.add(id);
+  // …and it is in the air from this instant until the strike. The choice is
+  // left exactly where it is: the box stays on this store until then.
+  const now = performance.now();
+  falling.set(id, { from: now, at: now + flightS * 1000 });
+  for (const pane of panes) dressWeaponPane(pane);
   return id;
+}
+
+/**
+ * THE COUNTDOWN, ONE FRAME AT A TIME.
+ *
+ * Called every frame, and does nothing at all on nearly all of them: the
+ * figures are written only when a SECOND has turned over or a weapon has
+ * landed, so a store in the air costs the screens ten touches in its whole
+ * flight rather than six hundred.
+ */
+let weaponClockShown = '';
+function tickWeapons(): void {
+  if (!falling.size && !weaponClockShown) return;
+  const now = performance.now();
+  // While something is down the map is drawn every frame, so the arrowhead
+  // creeping up the line from the envelope to the mark moves smoothly rather
+  // than in the steps the fixes come in.
+  if (falling.size) dirty = true;
+  let landed = false;
+  for (const [id, air] of falling) {
+    if (now < air.at) continue;
+    falling.delete(id);                  // it has hit: the store leaves now
+    landed = true;
+  }
+  const face = [...falling].map(([id, air]) => `${id}${weaponClockFace(air.at - now)}`).join('|');
+  if (!landed && face === weaponClockShown) return;
+  weaponClockShown = face;
+  for (const pane of document.querySelectorAll<HTMLElement>('.weaponPane')) {
+    dressWeaponPane(pane);
+  }
 }
 
 /**
@@ -2881,21 +3637,103 @@ function spendPickedWeapon(): string | null {
  * picture is made big enough for its green to come out the right size and
  * then slid back by however much lies to its left and above.
  */
-function placeWeaponLamp(lamp: HTMLElement, store: WeaponStore): void {
+interface ShapeBox { left: number; top: number; w: number; h: number }
+function weaponShapeBox(store: WeaponStore): ShapeBox {
   const art = WEAPON_ART[store.art];
-  const fullW = (store.w * art.cw) / art.w;
-  const fullH = (store.h * art.chh) / art.h;
-  lamp.style.width = `${fullW}%`;
-  lamp.style.height = `${fullH}%`;
-  lamp.style.left = `${store.x - (art.x / art.cw) * fullW}%`;
-  lamp.style.top = `${store.y - (art.y / art.chh) * fullH}%`;
+  const w = (store.w * art.cw) / art.w;
+  const h = (store.h * art.chh) / art.h;
+  return {
+    left: store.x - (art.x / art.cw) * w,
+    top: store.y - (art.y / art.chh) * h,
+    w, h,
+  };
+}
+function placeWeaponLamp(lamp: HTMLElement, store: WeaponStore): void {
+  const box = weaponShapeBox(store);
+  lamp.style.width = `${box.w}%`;
+  lamp.style.height = `${box.h}%`;
+  lamp.style.left = `${box.left}%`;
+  lamp.style.top = `${box.top}%`;
 }
 
-/** Give one weapons screen its eight lamps and its eight hotspots. */
+/**
+ * THE EMPTY PYLON, SHOWN THROUGH THE SHAPE OF THE STORE THAT HAS GONE.
+ *
+ * A fired store used to be covered by its own shape in the flat colour of the
+ * screen's background, and that was wrong wherever the aircraft's own green
+ * line ran BEHIND the store: the line went with it, and a piece of the
+ * outline was missing. What the stencil shows now is the SAME SCREEN WITHOUT
+ * THE STORES — weapon_5_layout_empty.png — laid over the pane at exactly the
+ * pane's own size, so what comes through the shape is the real screen as it
+ * would have been drawn with that pylon empty: the line whole, and nothing
+ * guessed at.
+ *
+ * The element is only as big as the store, so the picture inside it has to be
+ * blown up to the pane's size and slid back by however far the element stands
+ * from the pane's corner. background-position per cent counts from the edge
+ * of the element to the edge of the picture — (element - picture), which is
+ * negative here — hence the division.
+ *
+ * dx/dy slide the empty picture against the full one, for the case where the
+ * two were not exported on quite the same canvas.
+ */
+function placeWeaponGone(gone: HTMLElement, store: WeaponStore, dx: number, dy: number): void {
+  placeWeaponLamp(gone, store);
+  const box = weaponShapeBox(store);
+  gone.style.backgroundSize = `${(100 / box.w) * 100}% ${(100 / box.h) * 100}%`;
+  gone.style.backgroundPosition =
+    `${((box.left - dx) / (100 - box.w)) * 100}% ${((box.top - dy) / (100 - box.h)) * 100}%`;
+}
+
+/**
+ * THE WHITE CORNERS ROUND THE STORE THAT IS CHOSEN.
+ *
+ * The same designation box the map draws on the ground, standing here round
+ * whichever store is selected — and it is the same PICTURE: TD_box.png, with
+ * each of the four corners showing its own quarter of the file, so the elbow,
+ * the little tick after the gap and the weight of the line are the map's,
+ * not an imitation of them.
+ *
+ * THE BOX FOLLOWS THE STORE, THE CORNERS DO NOT. The four of them are set to
+ * the corners of whatever store is chosen — a tall 84, a short 82, an AA — so
+ * the box is always the height of the thing it is round; but each corner is
+ * drawn at its own fixed size, as a real designation box is, rather than being
+ * stretched with the box. That is what keeps a corner a corner on a store
+ * four times taller than it is wide.
+ *
+ * It does not blink. The blink says WHICH ONE IS CHOSEN and that is the one
+ * thing it says; a second thing moving beside it would only blur that.
+ */
+function placeWeaponTd(live: WeaponLive, store: WeaponStore | null): void {
+  if (!store) {
+    for (const corner of live.td) corner.classList.remove('is-on');
+    return;
+  }
+  const pad = cssNumber('--weapon-td-pad', 0.7);
+  const size = cssNumber('--weapon-td-corner', 1.6);
+  const left = store.x - pad;
+  const top = store.y - pad;
+  const right = store.x + store.w + pad - size;
+  const bottom = store.y + store.h + pad - size;
+  const spots: [number, number][] = [
+    [left, top], [right, top], [left, bottom], [right, bottom],
+  ];
+  live.td.forEach((corner, i) => {
+    corner.style.left = `${spots[i][0]}%`;
+    corner.style.top = `${spots[i][1]}%`;
+    corner.classList.add('is-on');
+  });
+}
+
+/** Give one weapons screen a lamp and a hotspot for every store. */
 function buildWeaponPane(pane: HTMLElement): void {
   const pad = cssNumber('--weapon-hotspot-pad', 1);
+  const emptyDx = cssNumber('--weapon-empty-dx', 0);
+  const emptyDy = cssNumber('--weapon-empty-dy', 0);
   const lamps: HTMLImageElement[] = [];
   const gones: HTMLElement[] = [];
+  const timers: HTMLElement[] = [];
+  const hits: HTMLButtonElement[] = [];
   WEAPON_STORES.forEach((store, i) => {
     const lamp = document.createElement('img');
     lamp.className = 'weaponBlink is-off';
@@ -2914,28 +3752,76 @@ function buildWeaponPane(pane: HTMLElement): void {
     const mask = `url("${WEAPON_ART[store.art].src}")`;
     gone.style.setProperty('-webkit-mask-image', mask);
     gone.style.setProperty('mask-image', mask);
-    placeWeaponLamp(gone, store);
+    placeWeaponGone(gone, store, emptyDx, emptyDy);
     pane.appendChild(gone);
     gones.push(gone);
 
+    // THE COUNTDOWN, standing on the middle of this store and nowhere else.
+    // Every store has its own, since two may be in the air at once; it is
+    // ONE SIZE for all of them, tall 84 or short 82 alike, because it is a
+    // figure to be read and not a part of the store's picture.
+    const timer = document.createElement('div');
+    timer.className = 'weaponTimer';
+    timer.setAttribute('aria-hidden', 'true');
+    timer.style.left = `${store.x + store.w / 2}%`;
+    timer.style.top = `${store.y + store.h / 2}%`;
+    timer.appendChild(document.createElement('span'));
+    pane.appendChild(timer);
+    timers.push(timer);
+  });
+
+  // THE HOTSPOTS, one per GROUP rather than one per store: a pair of 82s
+  // shares one, and it covers both of them and the gap between. Each press
+  // in it hands the blink on to the next of the pair that is still there.
+  WEAPON_HIT_ORDER.forEach((order, g) => {
+    const mine = order.map((i) => WEAPON_STORES[i]!);
+    const x0 = Math.min(...mine.map((st) => st.x));
+    const y0 = Math.min(...mine.map((st) => st.y));
+    const x1 = Math.max(...mine.map((st) => st.x + st.w));
+    const y1 = Math.max(...mine.map((st) => st.y + st.h));
     const hit = document.createElement('button');
     hit.type = 'button';
     hit.className = 'weaponStore';
-    hit.dataset.store = store.id;
-    hit.setAttribute('aria-label', store.id.replace(/_/g, ' '));
-    hit.style.left = `${store.x - pad}%`;
-    hit.style.top = `${store.y - pad}%`;
-    hit.style.width = `${store.w + pad * 2}%`;
-    hit.style.height = `${store.h + pad * 2}%`;
-    hit.addEventListener('click', (e) => { e.stopPropagation(); setWeaponPicked(pane, i); });
+    hit.dataset.store = WEAPON_HIT_GROUPS[g]!.join(' ');
+    hit.setAttribute('aria-label', mine.map((st) => st.id.replace(/_/g, ' ')).join(', '));
+    hit.style.left = `${x0 - pad}%`;
+    hit.style.top = `${y0 - pad}%`;
+    hit.style.width = `${x1 - x0 + pad * 2}%`;
+    hit.style.height = `${y1 - y0 + pad * 2}%`;
+    hit.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // Where in the walk this press stands: just after whichever of the
+      // group is blinking now, or at the start if none of it is.
+      const here = weaponLive.get(pane)?.picked ?? -1;
+      const at = order.indexOf(here);
+      for (let step = 1; step <= order.length; step += 1) {
+        const next = order[(at + step) % order.length]!;
+        if (!spent.has(WEAPON_STORES[next]!.id)) { setWeaponPicked(pane, next); return; }
+      }
+    });
     pane.appendChild(hit);
+    hits.push(hit);
   });
-  weaponLive.set(pane, { lamps, gones, picked: -1 });
+  // The four corners of the designation box, one element each. They sit in
+  // the pane itself, not in a box of their own, so that their size is a share
+  // of the SCREEN — it is the box round them that follows the store.
+  const td: HTMLElement[] = [];
+  for (const where of ['is-tl', 'is-tr', 'is-bl', 'is-br']) {
+    const corner = document.createElement('div');
+    corner.className = `weaponTdCorner ${where}`;
+    corner.setAttribute('aria-hidden', 'true');
+    pane.appendChild(corner);
+    td.push(corner);
+  }
+
+  weaponLive.set(pane, { lamps, gones, td, timers, hits, picked: -1 });
   // The one it opens on: counted from 1 in map.html, as the stores are listed
-  // there; anything outside the eight simply leaves none of them blinking.
-  setWeaponPicked(pane, Math.round(cssNumber('--weapon-start', 3)) - 1);
+  // there; anything outside the list simply leaves none of them blinking. A
+  // screen built after that one has been fired opens on the next still there.
+  setWeaponPicked(pane, weaponStartIndex());
   // A screen built after a shot opens with the stores that are gone already
-  // gone — the set outlives the pane.
+  // gone, and with the seconds still running on any that are in the air —
+  // both sets outlive the pane.
   dressWeaponPane(pane);
 }
 
@@ -2956,17 +3842,34 @@ function buildWeaponPane(pane: HTMLElement): void {
  *
  * The menu's artwork is Drop-down.png, which is grey throughout. The row for
  * the screen this pane is ALREADY showing is tinted, and that is done here
- * rather than in the file: the picture is read once, the five rows are found
- * by the bands below, and a tinted copy is made for each row. So the colour
- * is a knob, --pane-menu-mark, and not something baked in.
+ * rather than in the file: the picture is read once, its rows are found by
+ * the bands below, and a tinted copy is made for each row. So the colour is
+ * a knob, --pane-menu-mark, and not something baked in.
  */
-type PaneKind = 'ew' | 'weapon' | 'radar' | 'targets' | 'cam';
+type PaneKind = 'ew' | 'weapon' | 'radar' | 'targets' | 'self' | 'lion';
 
-/** The five, in the order the menu lists them — top to bottom, as drawn. */
-const PANE_ORDER: PaneKind[] = ['ew', 'weapon', 'radar', 'targets', 'cam'];
+/**
+ * The six, in the order the menu lists them — top to bottom, as drawn: the
+ * four screens in the upper panel, then the two VIDEOS in the lower one.
+ *
+ * THE TWO CAMERAS ARE TWO SCREENS NOW, not one screen with a camera chosen
+ * on it. There was once a Cam screen with a second little menu of its own in
+ * the top-right corner that said which camera it was on; the one menu names
+ * both, so that second menu is gone and the choosing is done in the same
+ * place as everything else. A camera screen's SOURCE is simply which of the
+ * two it is — see camOf.
+ */
+const PANE_ORDER: PaneKind[] = ['ew', 'weapon', 'radar', 'targets', 'self', 'lion'];
 
 /** What each screen is called, which button it wears, and what it is made of.
  *  `open` is the button's other face, worn while its menu is down. */
+/** What a camera screen is made of: the picture, and the markings over it —
+ *  the bar beside the map has markings drawn at its own shape. */
+const CAM_BODY = '<canvas class="camView"></canvas>'
+  + '<img class="camOverlay" src="./icons/cam_5_layout.png" alt="Camera">';
+const CAM_BODY_BAR = '<canvas class="camView"></canvas>'
+  + '<img class="camOverlay" src="./icons/cam_3_layout.png" alt="Camera">';
+
 const PANE_KINDS: Record<PaneKind, {
   button: string; open: string; body: string;
   /** The face for the TALL slot in the five-way arrangement. */
@@ -2996,9 +3899,9 @@ const PANE_KINDS: Record<PaneKind, {
   },
   targets: {
     button: './icons/Targets_button.png',
-    // Her file is spelled "botton"; the other spelling is tried as well so
-    // that renaming it later needs no change here.
-    open: './icons/Targets_botton_open.png',
+    // This one was once spelled "botton"; it is Targets_button_open.png in
+    // the folder now, and that is the name used here.
+    open: './icons/Targets_button_open.png',
     // THE LIST IS ALWAYS THE WHOLE LIST. There is one file, the long one,
     // and whatever slot it is put in it is shown from the TOP down: what
     // fits is what shows, and the rest is scrolled to. That is why it is
@@ -3008,86 +3911,415 @@ const PANE_KINDS: Record<PaneKind, {
     tall: '<div class="listScroll"><img class="is-tallFace" src="./icons/list_5_layout_all.png" alt="Targets"></div>',
     bar: '<div class="listScroll"><img src="./icons/list_3_layout.png" alt="Targets"></div>',
   },
-  cam: {
-    button: './icons/Cam_button.png',
-    open: './icons/Cam_button_open.png',
-    body: '<canvas class="camView"></canvas>'
-      + '<img class="camOverlay" src="./icons/cam_5_layout.png" alt="Camera">',
-    bar: '<canvas class="camView"></canvas>'
-      + '<img class="camOverlay" src="./icons/cam_3_layout.png" alt="Camera">',
+  // THE TWO CAMERA SCREENS. One and the same screen but for which camera
+  // fills it, so they are built from one description and differ only in the
+  // button they wear.
+  self: {
+    button: './icons/Self_button.png',
+    open: './icons/Self_button_open.png',
+    body: CAM_BODY,
+    bar: CAM_BODY_BAR,
+  },
+  lion: {
+    button: './icons/Lion_button.png',
+    open: './icons/Lion_button_open.png',
+    body: CAM_BODY,
+    bar: CAM_BODY_BAR,
   },
 };
 
-/**
- * THE MENU'S FIVE ROWS, measured off Drop-down.png (709 x 1103): the panel
- * itself, and the band each row owns, as shares of the picture. A row's band
- * runs half way to its neighbours, so pressing anywhere on a row works.
- */
-const MENU_PANEL = { top: 22 / 1103, bottom: 934 / 1103 };
-const MENU_BANDS = [
-  { from: 22, to: 205 },    // EW
-  { from: 205, to: 385 },   // Weapon
-  { from: 385, to: 565 },   // Radar
-  { from: 565, to: 746 },   // Targets
-  { from: 746, to: 934 },   // Cam
-].map((b) => ({ from: b.from / 1103, to: b.to / 1103 }));
+/** One row's share of the menu picture, and the panel it is drawn in. */
+interface MenuBand {
+  from: number;
+  to: number;
+  /** The panel's own box, which the pill that marks the row is drawn inside. */
+  box?: PictureBox;
+}
 
 /**
- * A copy of the menu with one row tinted, made in the browser from the grey
- * file. Within the row, every pixel lighter than the panel is carried towards
- * the chosen colour by however much lighter it is, which keeps the smooth
- * edges of the letters instead of cutting them into steps.
+ * THE MENU'S SIX ROWS, as the picture stands — 760 x 1161, the screens'
+ * panel from 13 down to 708 and the videos' from 813 to 1148, both of them
+ * 12 to 747 across. These are only the FALLBACK: the bands are read off
+ * whatever picture is in the folder (see menuBandsIn), and these stand in
+ * only for a picture that cannot be read at all.
  */
-const menuTinted = new Map<number, string>();
-const menuArt = new Image();
-let menuArtReady = false;
-menuArt.src = './icons/Drop-down.png';
-menuArt.addEventListener('load', () => { menuArtReady = true; refreshOpenMenus(); });
+const MENU_PANELS = {
+  screens: { left: 12, right: 747, top: 13, bottom: 708 },
+  videos: { left: 12, right: 747, top: 813, bottom: 1148 },
+};
+const MENU_BANDS: MenuBand[] = [
+  { from: 13, to: 180, box: MENU_PANELS.screens },    // EW
+  { from: 180, to: 360, box: MENU_PANELS.screens },   // Weapon
+  { from: 360, to: 540, box: MENU_PANELS.screens },   // Radar
+  { from: 540, to: 708, box: MENU_PANELS.screens },   // Targets
+  { from: 813, to: 980, box: MENU_PANELS.videos },    // Self Video
+  { from: 980, to: 1148, box: MENU_PANELS.videos },   // Lion
+].map((b) => ({ ...b, from: b.from / 1161, to: b.to / 1161 }));
 
-function menuWithRow(row: number): string | null {
-  const had = menuTinted.get(row);
+/**
+ * ── WHERE THE ROWS ARE: FOUND IN THE PICTURE, NOT WRITTEN DOWN ─────────────
+ *
+ * The menu is a picture with one row of writing per screen, and both the
+ * press and the tint have to land on the right row. Writing those places
+ * down as numbers works right up until the picture is exported again at
+ * another size or with another margin round it — and then every row is out:
+ * presses land on the wrong screen and the tint falls in a gap. That is
+ * exactly what happened when Drop-down.png went from 709 x 1103 to
+ * 868 x 1008.
+ *
+ * So the picture is asked instead, once, when it loads.
+ *
+ *   THE PANEL is however much of the picture is SOLID — the soft shadow
+ *   around it is not part of it.
+ *   A ROW is a run of lines inside the panel that are not simply the
+ *   panel's own shade.
+ *   THE BAND a row owns reaches half way to the row above and half way to
+ *   the one below, and the first and last reach the ends of the panel, so
+ *   a press anywhere on a row works.
+ *
+ * It also gives back the panel's TOP INSET as a share of the picture's
+ * width, which is what the CSS needs to hang the menu the right distance
+ * under its button — see .paneMenu in map.html.
+ *
+ * Export the menu at any size, with any margin: as long as it still has one
+ * row of writing per screen, in the order they are listed, it is followed.
+ * Anything else, and the written-down bands above are kept.
+ */
+interface PictureBox { left: number; right: number; top: number; bottom: number }
+
+/**
+ * WHERE THE SOLID PART OF A PICTURE SITS INSIDE IT.
+ *
+ * These files are drawn with air round them — a soft shadow, a margin — and
+ * almost everything that hangs one off another needs to know how much. It is
+ * read off the picture rather than written down, so a file exported again at
+ * another size or with another margin needs nothing changed anywhere.
+ */
+function solidBox(art: HTMLImageElement): PictureBox | null {
+  const w = art.naturalWidth;
+  const h = art.naturalHeight;
+  if (!w || !h) return null;
+  const cut = document.createElement('canvas');
+  cut.width = w;
+  cut.height = h;
+  const g = cut.getContext('2d', { willReadFrequently: true });
+  if (!g) return null;
+  g.drawImage(art, 0, 0);
+  let d: Uint8ClampedArray;
+  try { d = g.getImageData(0, 0, w, h).data; } catch { return null; }
+  const solid = (x: number, y: number): boolean => d[(((y * w) + x) * 4) + 3]! > 128;
+  let top = -1; let bottom = -1;
+  for (let y = 0; y < h; y += 1) {
+    let any = false;
+    for (let x = 0; x < w; x += 4) if (solid(x, y)) { any = true; break; }
+    if (!any) continue;
+    if (top < 0) top = y;
+    bottom = y;
+  }
+  if (top < 0) return null;
+  let left = -1; let right = -1;
+  for (let x = 0; x < w; x += 1) {
+    let any = false;
+    for (let y = top; y <= bottom; y += 4) if (solid(x, y)) { any = true; break; }
+    if (!any) continue;
+    if (left < 0) left = x;
+    right = x;
+  }
+  return { left, right, top, bottom };
+}
+
+/**
+ * ONE PICTURE'S EDGE, HANDED TO THE CSS.
+ *
+ * The menu hangs under its button, and how far under depends on where the
+ * pill ends in the button's picture and where the panel begins in the
+ * menu's. Both are read off the files here and set as a share of each
+ * file's WIDTH, which is what the CSS scales by — see .paneMenu in map.html.
+ * The numbers written into the CSS are only what is used until the picture
+ * has been read.
+ */
+function tellPictureEdge(file: string, name: string, which: 'top' | 'bottom'): void {
+  const art = new Image();
+  art.addEventListener('load', () => {
+    const box = solidBox(art);
+    if (!box) return;
+    // A TOP EDGE is the first solid line; a FOOT is the line AFTER the last
+    // one, which is where the next thing begins. Taking the last solid line
+    // itself leaves whatever hangs off it a pixel high — nothing on a file
+    // drawn with air round it, but plainly a pixel when the picture ends
+    // exactly where the shape does.
+    const edge = which === 'top' ? box.top : box.bottom + 1;
+    document.documentElement.style.setProperty(name, (edge / art.naturalWidth).toFixed(5));
+  });
+  art.src = file;
+}
+
+interface MenuRead {
+  bands: MenuBand[];
+  /** The FIRST panel's top edge, as a share of the picture's WIDTH — which
+   *  is where the menu begins, and so what the gap under the button is
+   *  measured from. */
+  inset: number;
+}
+
+/**
+ * THE PICTURE IS READ IN TWO STEPS, because it is drawn in two parts.
+ *
+ *   THE PANELS. The menu is no longer one block: the four screens sit in one
+ *   rounded panel and the two videos in another, with the word Videos on the
+ *   bare background between them. A panel is a run of lines whose shade is
+ *   not the background the whole picture is laid on — and the background is
+ *   whatever the picture's own first line mostly is. A picture whose panel
+ *   fills it, as the old one did, has no line that differs: then the whole
+ *   of it is taken as one panel, and everything below reads exactly as it
+ *   read before.
+ *   THE ROWS, inside each panel: a run of lines that are not simply that
+ *   panel's own shade. Nothing between the panels belongs to any row, so the
+ *   word Videos answers no press, which is right — it is a heading, not a
+ *   choice.
+ *
+ * A row's BAND reaches half way to the row above and half way to the one
+ * below, and the first and last reach the ends of THEIR OWN panel. Each band
+ * carries that panel's box with it, so the pill that marks the chosen row is
+ * drawn inside the panel it belongs to and never over the gap.
+ */
+function menuBandsIn(art: HTMLImageElement, want: number): MenuRead | null {
+  const w = art.naturalWidth;
+  const h = art.naturalHeight;
+  const box = solidBox(art);
+  if (!w || !h || !box) return null;
+  const { left, right, top, bottom } = box;
+  if (bottom - top < want * 8) return null;
+  const cut = document.createElement('canvas');
+  cut.width = w;
+  cut.height = h;
+  const g = cut.getContext('2d', { willReadFrequently: true });
+  if (!g) return null;
+  g.drawImage(art, 0, 0);
+  let d: Uint8ClampedArray;
+  try { d = g.getImageData(0, 0, w, h).data; } catch { return null; }
+  const at = (x: number, y: number): number[] => {
+    const i = ((y * w) + x) * 4;
+    return [d[i]!, d[i + 1]!, d[i + 2]!, d[i + 3]!];
+  };
+  // Kept off the edges: the rounded corners and the one blended line along
+  // each edge are not a flat shade and would read as writing.
+  const inx = Math.max(2, Math.round((right - left) * 0.02));
+  const x0 = left + inx; const x1 = right - inx;
+  if (x1 - x0 < 8) return null;
+
+  /** Whatever shade most of one line across the picture is. */
+  const shadeOf = (y: number): number[] | null => {
+    const seen = new Map<string, number>();
+    for (let x = x0; x <= x1; x += 3) {
+      const p = at(x, y);
+      if (p[3]! < 128) continue;
+      const key = `${p[0]},${p[1]},${p[2]}`;
+      seen.set(key, (seen.get(key) ?? 0) + 1);
+    }
+    let best = ''; let most = 0;
+    for (const [key, n] of seen) if (n > most) { best = key; most = n; }
+    return best ? best.split(',').map(Number) : null;
+  };
+  const near = (a: number[] | null, b: number[] | null): boolean => !!a && !!b
+    && Math.abs(a[0]! - b[0]!) + Math.abs(a[1]! - b[1]!) + Math.abs(a[2]! - b[2]!) <= 18;
+
+  // ── the panels ──────────────────────────────────────────────────────────
+  const paper = shadeOf(top);
+  const panels: { from: number; to: number }[] = [];
+  let open: number | null = null;
+  for (let y = top; y <= bottom; y += 1) {
+    if (!near(shadeOf(y), paper)) { if (open === null) open = y; continue; }
+    if (open !== null && y - open >= 20) panels.push({ from: open, to: y - 1 });
+    open = null;
+  }
+  if (open !== null && bottom - open >= 20) panels.push({ from: open, to: bottom });
+  // A picture that is panel all the way through: one panel, the whole of it.
+  if (!panels.length) panels.push({ from: top, to: bottom });
+
+  // ── the rows in each ────────────────────────────────────────────────────
+  const bands: MenuBand[] = [];
+  for (const panel of panels) {
+    const mid = Math.round((panel.from + panel.to) / 2);
+    const bg = shadeOf(mid);
+    if (!bg) return null;
+    // How far the panel itself reaches across, read along that same line.
+    let pl = -1; let pr = -1;
+    for (let x = left; x <= right; x += 1) {
+      const p = at(x, mid);
+      if (p[3]! < 128 || !near(p, bg)) continue;
+      if (pl < 0) pl = x;
+      pr = x;
+    }
+    if (pl < 0 || pr - pl < 8) return null;
+    const rx0 = Math.max(x0, pl + inx);
+    const rx1 = Math.min(x1, pr - inx);
+    if (rx1 - rx0 < 8) return null;
+    const runs: { from: number; to: number }[] = [];
+    let from: number | null = null;
+    for (let y = panel.from; y <= panel.to; y += 1) {
+      let plain = true;
+      for (let x = rx0; x <= rx1; x += 3) {
+        const p = at(x, y);
+        if (p[3]! < 128) continue;
+        if (!near(p, bg)) { plain = false; break; }
+      }
+      if (!plain) { if (from === null) from = y; continue; }
+      if (from !== null && y - from >= 6) runs.push({ from, to: y - 1 });
+      from = null;
+    }
+    if (from !== null && panel.to - from >= 6) runs.push({ from, to: panel.to });
+    const pbox: PictureBox = { left: pl, right: pr, top: panel.from, bottom: panel.to };
+    runs.forEach((run, i) => {
+      const above = i === 0 ? panel.from : Math.round((runs[i - 1]!.to + run.from) / 2);
+      const below = i === runs.length - 1
+        ? panel.to : Math.round((run.to + runs[i + 1]!.from) / 2);
+      bands.push({ from: above / h, to: below / h, box: pbox });
+    });
+  }
+  if (bands.length !== want) return null;
+  return { bands, inset: panels[0]!.from / w };
+}
+
+/**
+ * A copy of the menu with ONE ROW PICKED OUT, made in the browser from the
+ * grey file.
+ *
+ * WHAT IS COLOURED IS THE ROW, NOT THE WRITING. A rounded pill is laid over
+ * the row — the row's own band, drawn in from the panel's edges by the same
+ * margin all round — and within it every shade is carried the same distance
+ * it already stood ABOVE THE PANEL, but now above the chosen colour: the
+ * panel itself becomes the colour, the writing and the mark stay white, and
+ * the soft disc behind the mark becomes the same light step of the colour
+ * that it was of the grey. So the row reads as a pill with white writing on
+ * it, exactly as the design draws it, and nothing is cut into steps.
+ *
+ * THE PILL IS LAID DOWN SOLID. The panels are not all drawn at the same
+ * strength — the screens' menu is a little see-through, the camera's is
+ * not — and a colour drawn at four fifths strength is not the same colour
+ * as one drawn at full. So inside the pill the picture is carried up to
+ * full strength as well, and the chosen row then reads as EXACTLY the
+ * colour that is asked for, in every menu, whatever the file behind it is.
+ *
+ * Outside the pill the picture is untouched, and the pill's edge is laid
+ * down softly, so no corner is left ragged.
+ */
+interface MenuArt {
+  art: HTMLImageElement;
+  bands: MenuBand[];
+  tinted: Map<number, string>;
+  ready: boolean;
+}
+
+/** One menu picture, read once and kept with the tinted copies made from it.
+ *  `inset` is the CSS knob its panel's top margin is reported through, so
+ *  the menu hangs the right distance under its button whatever the picture
+ *  is exported like. */
+function menuArtFrom(file: string, bands: MenuBand[], inset: string): MenuArt {
+  const m: MenuArt = { art: new Image(), bands, tinted: new Map(), ready: false };
+  m.art.src = file;
+  m.art.addEventListener('load', () => {
+    m.ready = true;
+    // The picture says where its own rows are; the written-down bands are
+    // only kept for a picture that cannot be read.
+    const read = menuBandsIn(m.art, bands.length);
+    if (read) {
+      m.bands = read.bands;
+      document.documentElement.style.setProperty(inset, String(read.inset.toFixed(5)));
+    }
+    m.tinted.clear();
+    refreshOpenMenus();
+  });
+  return m;
+}
+
+/** Lay a menu's invisible press rows where its bands say they go. */
+function placeMenuRows(menu: HTMLElement, m: MenuArt): void {
+  menu.querySelectorAll<HTMLElement>('.paneMenuRow').forEach((row, i) => {
+    const band = m.bands[i];
+    if (!band) return;
+    row.style.top = `${(band.from * 100).toFixed(3)}%`;
+    row.style.height = `${((band.to - band.from) * 100).toFixed(3)}%`;
+  });
+}
+
+const screenMenu = menuArtFrom('./icons/Drop-down.png', MENU_BANDS, '--pane-menu-inset');
+// Where the pill ends in a button's own picture, which is what the menu
+// hangs from. Every button is drawn to the same frame — the two video ones
+// included — so one of them speaks for all six.
+tellPictureEdge('./icons/EW_button.png', '--pane-button-pill', 'bottom');
+
+function menuWithRow(m: MenuArt, row: number): string | null {
+  const had = m.tinted.get(row);
   if (had) return had;
-  if (!menuArtReady || !menuArt.naturalWidth) return null;
-  const w = menuArt.naturalWidth;
-  const h = menuArt.naturalHeight;
+  if (!m.ready || !m.art.naturalWidth) return null;
+  const w = m.art.naturalWidth;
+  const h = m.art.naturalHeight;
+  const band = m.bands[row];
+  const box = band?.box;
+  if (!band || !box) return null;
   const cut = document.createElement('canvas');
   cut.width = w; cut.height = h;
-  const g = cut.getContext('2d');
+  const g = cut.getContext('2d', { willReadFrequently: true });
   if (!g) return null;
-  g.drawImage(menuArt, 0, 0);
-  const band = MENU_BANDS[row];
-  const y0 = Math.round(band.from * h);
-  const y1 = Math.round(band.to * h);
-  const img = g.getImageData(0, y0, w, Math.max(1, y1 - y0));
+  g.drawImage(m.art, 0, 0);
+
+  // THE PILL: the row's band, drawn in from the panel on every side by the
+  // same margin, with its corners rounded. Both are shares — the margin of
+  // the picture's width, the rounding of the pill's own height — so they
+  // hold however the file is exported.
+  const pad = (cssNumber('--pane-menu-pill-pad', 1.38) / 100) * w;
+  const x0 = box.left + pad;
+  const x1 = box.right - pad;
+  const y0 = (band.from * h) + pad;
+  const y1 = (band.to * h) - pad;
+  if (x1 - x0 < 2 || y1 - y0 < 2) return null;
+  const round = Math.min(
+    (cssNumber('--pane-menu-pill-round', 35) / 100) * (y1 - y0),
+    (x1 - x0) / 2, (y1 - y0) / 2,
+  );
+
+  // Only the strip the pill lies in is read and written back.
+  const from = Math.max(0, Math.floor(y0 - 1));
+  const tall = Math.min(h - from, Math.ceil(y1 - y0 + 2));
+  if (tall < 1) return null;
+  const shape = document.createElement('canvas');
+  shape.width = w; shape.height = tall;
+  const sg = shape.getContext('2d', { willReadFrequently: true });
+  if (!sg) return null;
+  sg.fillStyle = '#ffffff';
+  sg.beginPath();
+  sg.roundRect(x0, y0 - from, x1 - x0, y1 - y0, round);
+  sg.fill();
+  const mask = sg.getImageData(0, 0, w, tall).data;
+
+  const img = g.getImageData(0, from, w, tall);
   const d = img.data;
   const tint = colourBytes(cssText('--pane-menu-mark', '#1FC4B6'));
-  // The two ends of the ramp, both found in the band itself: the panel is
-  // whatever shade most of it is, and the letters are as light as it gets.
-  // Only the solid part of the picture is touched, so the soft shadow that
-  // falls outside the panel is left exactly as it was.
+  // The foot of the ramp: the panel is whatever shade most of this strip
+  // is. The head of it is white, where the writing already stands.
   const seen = new Uint32Array(256);
-  let top = 0;
   for (let i = 0; i < d.length; i += 4) {
-    if (d[i + 3] < 200) continue;
-    const lum = Math.round((d[i] + d[i + 1] + d[i + 2]) / 3);
-    seen[lum]++;
-    if (lum > top) top = lum;
+    if (d[i + 3]! < 200) continue;
+    seen[Math.round((d[i]! + d[i + 1]! + d[i + 2]!) / 3)]! += 1;
   }
   let panel = 0;
-  for (let v = 0; v < 256; v++) if (seen[v] > seen[panel]) panel = v;
-  if (top <= panel + 8) return null;                 // nothing to pick out
+  for (let v = 0; v < 256; v += 1) if (seen[v]! > seen[panel]!) panel = v;
+  if (panel >= 250) return null;                     // nothing to lay a pill on
   for (let i = 0; i < d.length; i += 4) {
-    if (d[i + 3] < 200) continue;
-    const lum = (d[i] + d[i + 1] + d[i + 2]) / 3;
-    if (lum <= panel + 6) continue;                  // the panel itself
-    const t = Math.min(1, (lum - panel) / (top - panel));
-    d[i] = panel + (tint[0] - panel) * t;
-    d[i + 1] = panel + (tint[1] - panel) * t;
-    d[i + 2] = panel + (tint[2] - panel) * t;
-  }
-  g.putImageData(img, 0, y0);
+    const on = mask[i + 3]! / 255;                   // inside the pill, softly
+    if (on <= 0 || d[i + 3]! < 200) continue;
+    const lum = (d[i]! + d[i + 1]! + d[i + 2]!) / 3;
+    const t = Math.max(0, Math.min(1, (lum - panel) / (255 - panel)));
+    for (let k = 0; k < 3; k += 1) {
+      const want = tint[k]! + (255 - tint[k]!) * t;
+      d[i + k] = d[i + k]! + (want - d[i + k]!) * on;
+    }
+    d[i + 3] = d[i + 3]! + (255 - d[i + 3]!) * on;   // and solid, so the
+  }                                                  // colour is the colour
+  g.putImageData(img, 0, from);
   const url = cut.toDataURL('image/png');
-  menuTinted.set(row, url);
+  m.tinted.set(row, url);
   return url;
 }
 
@@ -3102,13 +4334,86 @@ function colourBytes(text: string): [number, number, number] {
   ];
 }
 
+/**
+ * ══ WHICH CAMERA A CAMERA SCREEN IS SHOWING ═════════════════════════════════
+ *
+ * There are two cameras in the world: the one under the AIRCRAFT and the one
+ * under the DRONE circling the target. There is nothing to choose on a
+ * camera screen any more — the screen IS one of the two. The menu in the
+ * corner names both (Self Video, Lion) alongside the other screens, so
+ * putting the drone's picture up is the same press as putting the radar up,
+ * and the little menu that used to sit in the screen's top-right corner is
+ * gone with the question it answered.
+ *
+ * Open two of them and they are two independent screens: one may sit on the
+ * drone while the other watches the ground ahead of the aircraft.
+ *
+ * Which camera is wanted is sent to the simulator, which is where both of
+ * them are: only the ones named are pointed and rendered, so a camera
+ * nobody is watching costs nothing.
+ */
+type CamSource = 'self' | 'lion';
+
+/** The two, in the order the menu lists them — Self above, Lion under it. */
+const CAM_SOURCES: CamSource[] = ['self', 'lion'];
+
+/** The camera a screen is, or null where the screen is not a camera at all. */
+function camOf(kind: PaneKind | undefined): CamSource | null {
+  return kind === 'self' || kind === 'lion' ? kind : null;
+}
+
+/** The pane a camera part belongs to. */
+function paneOf(thing: Element): HTMLElement | null {
+  return thing.closest<HTMLElement>('.sidePane');
+}
+
+/** The camera screens that are actually ON SHOW — every arrangement keeps its
+ *  own panes in the page, and the ones belonging to the others have no size. */
+function liveCamPanes(): HTMLElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>('.camPane'))
+    .filter((pane) => pane.clientWidth > 0 && pane.clientHeight > 0);
+}
+
+/** What was last said to the simulator, so the same word is not said twice —
+ *  and whether there is yet a channel to say it on, since the screens are
+ *  built while the page is still setting itself up. */
+let camToldWanted = '';
+let camCanTell = false;
+
+/**
+ * Tell the simulator what its cameras are wanted for: every camera that a
+ * screen on show is asking for, and nothing else. Called whenever a screen
+ * is built or changed, whenever the arrangement changes, and whenever the
+ * simulator starts a run — it is cheap, and it says the same thing every
+ * time unless something really has changed.
+ */
+function tellCamSource(): void {
+  if (!camCanTell) return;
+  const want = CAM_SOURCES.filter((src) => liveCamPanes().some((p) => paneSource(p) === src));
+  const said = want.join(',');
+  if (said === camToldWanted) return;
+  camToldWanted = said;
+  channel.postMessage({ kind: 'camsource', want } satisfies CamSourceOrder);
+}
+
 /** Which screen each pane is showing. */
 const paneKind = new WeakMap<HTMLElement, PaneKind>();
+
+/** Which camera a screen is showing. A screen that is not a camera at all is
+ *  never asked, and answers with the aircraft's. */
+function paneSource(pane: HTMLElement): CamSource {
+  return camOf(paneKind.get(pane)) ?? 'self';
+}
 const panes = Array.from(document.querySelectorAll<HTMLElement>('.sidePane[data-pane]'));
 
 /** Put the right tinted picture into every menu that is open — used when the
  *  artwork finishes loading after a menu has already been pulled down. */
 function refreshOpenMenus(): void {
+  // Every menu in the page, open or not: a picture that has only just been
+  // read moves the rows under all of them.
+  for (const menu of document.querySelectorAll<HTMLElement>('.paneMenu')) {
+    placeMenuRows(menu, screenMenu);
+  }
   for (const pane of panes) {
     const menu = pane.querySelector<HTMLElement>('.paneMenu');
     if (!menu || !menu.classList.contains('is-open')) continue;
@@ -3119,7 +4424,7 @@ function refreshOpenMenus(): void {
 
 function dressMenu(menu: HTMLElement, kind: PaneKind): void {
   const face = menu.querySelector('img');
-  const url = menuWithRow(PANE_ORDER.indexOf(kind));
+  const url = menuWithRow(screenMenu, PANE_ORDER.indexOf(kind));
   if (face && url) face.src = url;
 }
 
@@ -3179,7 +4484,7 @@ function setPaneKind(pane: HTMLElement, kind: PaneKind): void {
   pane.className = 'sidePane';
   if (kind === 'radar') pane.classList.add('radarPane');
   if (kind === 'weapon') pane.classList.add('weaponPane');
-  if (kind === 'cam') pane.classList.add('camPane');
+  if (camOf(kind)) pane.classList.add('camPane');
   if (pane === tallPane) updateTallColumn();     // before the face is chosen
   const art = PANE_KINDS[kind];
   // Which of its faces: the taller one in the tall slot, the bar's own where
@@ -3196,9 +4501,9 @@ function setPaneKind(pane: HTMLElement, kind: PaneKind): void {
   }
   // A camera screen built while the lens is already tight is given the quiet
   // markings at once, rather than waiting for the zoom to change again.
-  if (kind === 'cam') dressCamOverlays();
+  if (camOf(kind)) { dressCamOverlays(); tellCamSource(); }
   if (kind === 'weapon') buildWeaponPane(pane);
-  if (kind === 'targets') { wireListPresses(); dressRowRings(); }
+  if (kind === 'targets') { dressListFaces(); wireListPresses(); dressRowRings(); }
 
   const btn = document.createElement('button');
   btn.type = 'button';
@@ -3231,8 +4536,6 @@ function setPaneKind(pane: HTMLElement, kind: PaneKind): void {
     row.className = 'paneMenuRow';
     row.dataset.kind = other;
     row.setAttribute('aria-label', other);
-    row.style.top = `${MENU_BANDS[i].from * 100}%`;
-    row.style.height = `${(MENU_BANDS[i].to - MENU_BANDS[i].from) * 100}%`;
     row.addEventListener('click', (e) => {
       e.stopPropagation();
       // Choosing another screen on the TALL list does not take the list's
@@ -3252,6 +4555,7 @@ function setPaneKind(pane: HTMLElement, kind: PaneKind): void {
     });
     menu.appendChild(row);
   });
+  placeMenuRows(menu, screenMenu);
   pane.appendChild(menu);
 }
 
@@ -3267,7 +4571,7 @@ if (sparePane && sparePane !== tallPane) {
 }
 updateTallColumn();
 // A press anywhere else puts the menus away, the way a menu should behave.
-document.addEventListener('click', () => closeOtherMenus());
+document.addEventListener('click', () => { closeOtherMenus(); });
 /**
  * ══ HOLD ════════════════════════════════════════════════════════════════════
  *
@@ -3321,13 +4625,16 @@ function startAgain(): void {
   destroyed.clear();
   picked.clear();
   spent.clear();
+  falling.clear();                          // nothing is in the air either
+  weaponClockShown = '';
   setSlaved(null);
   clearTd();
   tiles.clear();                            // the satellite picture, afresh
   for (const pane of document.querySelectorAll<HTMLElement>('.weaponPane')) {
-    setWeaponPicked(pane, -1);
+    setWeaponPicked(pane, weaponStartIndex());   // a full aircraft, armed again
     dressWeaponPane(pane);
   }
+  dressListFaces();                         // every burnt row whole again
   dressRowRings();
   setPausedHere(false);                     // never start again held
   dirty = true;
@@ -3350,6 +4657,30 @@ window.addEventListener('keydown', (e) => {
   const open = document.querySelector('.paneMenu.is-open') || layoutMenu.classList.contains('is-open');
   if (open) { closeOtherMenus(); setLayoutMenuOpen(false); return; }
   setPausedHere(!paused);
+});
+
+/**
+ * ENTER LETS A WEAPON GO, with the map in front.
+ *
+ * The trigger is the simulator's: this only ASKS for the shot, and the
+ * simulator answers it exactly as it answers the red trigger — the burst over
+ * the truck, and the fire order back over the channel that fades the store
+ * and starts its countdown. So the weapons screen can be worked through
+ * without the stick, and without reaching for the other window.
+ *
+ * It takes the key AWAY from whatever is in focus. The stores are buttons,
+ * and a button with the focus ring on it is pressed by Enter: without this a
+ * single Enter would both hand the blink to the store under the focus and
+ * fire. A MENU THAT IS DOWN keeps the key, though — there Enter is how a row
+ * is chosen, and choosing a screen should not let a weapon go. Held down it
+ * says nothing more: one press, one shot, as a trigger is.
+ */
+window.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' || e.repeat || e.altKey || e.ctrlKey || e.metaKey) return;
+  const open = document.querySelector('.paneMenu.is-open') || layoutMenu.classList.contains('is-open');
+  if (open) return;
+  e.preventDefault();
+  channel.postMessage({ kind: 'trigger' } satisfies TriggerOrder);
 });
 
 /**
@@ -3391,8 +4722,12 @@ friendsBar.addEventListener('click', () => { friendListOpen = !friendListOpen; d
 // Every face the panel can wear is fetched up front, so a press swaps the
 // picture without a blink.
 for (const src of [
-  FRIENDS_OPEN, LIST_BOTH.src, LIST_FRIENDS_FULL.src, LIST_FOES_FULL.src,
+  FRIENDS_OPEN, listSrc(LIST_BOTH), listSrc(LIST_FRIENDS_FULL), listSrc(LIST_FOES_FULL),
   FOES_BAR.open, FOES_BAR.shut, FRIENDS_BAR.open, FRIENDS_BAR.shut,
+  // The burnt faces too, so a strike swaps the picture without a blink.
+  ...LIST_BURNT.map((s) => listSrc(s.burnt)),
+  // And every screen button's pair of faces, plain and pulled down.
+  ...PANE_ORDER.flatMap((kind) => [PANE_KINDS[kind].button, PANE_KINDS[kind].open]),
 ]) {
   new Image().src = src;
 }
@@ -3877,18 +5212,20 @@ checkBottomPanel();
 // -- the link to the simulator -----------------------------------------------
 
 const channel = new BroadcastChannel(MAP_CHANNEL);
+camCanTell = true;   // from here on the screens can say what they are showing
 channel.onmessage = (e: MessageEvent<MapMessage>) => {
   const message = e.data;
   if (!message) return;
   // A picture from the camera under the aircraft travels on the same channel.
   if ('kind' in message && message.kind === 'cam') {
-    noteCamFov(message.fov);
-    takeCamFrame(message.image);
+    const from = message.from ?? 'self';
+    noteCamFov(message.fov, from);
+    takeCamFrame(message.image, from);
     return;
   }
   // The trigger, pulled in the other window.
   if ('kind' in message && message.kind === 'fire') {
-    fireWeapon();
+    fireWeapon(message.flight ?? WEAPON_FLIGHT_FALLBACK_S);
     return;
   }
   // Held, or let go, from the other window.
@@ -3906,6 +5243,9 @@ channel.onmessage = (e: MessageEvent<MapMessage>) => {
   const next = message as MapFix;
   if (typeof next.lat !== 'number') return;
   if (!fix) waitEl.classList.add('is-hidden'); // the first fix: show the map
+  // A SIMULATOR THAT HAS JUST STARTED has heard nothing yet, so the HUD's word
+  // is said again on the first fix of a new run rather than only on a change.
+  if (next.runId !== cueRunSaid) { cueRunSaid = next.runId; cueSaid = ''; }
   fix = next;
   noteStruck(next.struck);
   rememberLead(next);
@@ -3916,8 +5256,10 @@ channel.onmessage = (e: MessageEvent<MapMessage>) => {
 
 // A map window that has just opened says what it has chosen — nothing — so a
 // simulator left running from an older window lets go of anything it is still
-// badging.
+// badging, and which camera its camera screen is on, so the two agree from
+// the first frame.
 tellPicked();
+tellCamSource();
 
 /** Shortest signed angle from `a` to `b` (rad). */
 function angleDelta(a: number, b: number): number {
@@ -3935,6 +5277,7 @@ function frame(): void {
     if (Math.abs(d) > 0.0005) { mapHeading += d * HEADING_EASE; dirty = true; }
 
     if (cueRunning()) dirty = true;           // the rings are on a clock
+    if (!paused && uavFlying()) dirty = true; // and the drone is going round
 
     // The north dot on the icon button, turned the way the map is turned.
     document.documentElement.style.setProperty(
@@ -3967,6 +5310,16 @@ function frame(): void {
   try { drawRadar(performance.now()); } catch (err) { console.error('map: radar', err); }
   try { drawEw(); } catch (err) { console.error('map: EW', err); }
   try { drawCam(); } catch (err) { console.error('map: camera', err); }
+  // What the screens are asking for, every frame. It says nothing unless the
+  // answer has changed, so whatever put a camera screen on show or took one
+  // off it — a menu, an arrangement, a window being resized — the simulator
+  // is never left rendering a camera nobody is watching, or none that is.
+  tellCamSource();
+  // The seconds on a store that is in the air, where one is…
+  try { tickWeapons(); } catch (err) { console.error('map: weapon clock', err); }
+  // …and the word to the HUD in the other window, which says nothing unless
+  // the screen is now about something else than it was.
+  try { tellWeaponCue(); } catch (err) { console.error('map: weapon cue', err); }
   requestAnimationFrame(frame);
 }
 
@@ -4528,8 +5881,10 @@ function drawEw(): void {
  * transparent PNG laid over the top, so the picture needs no drawing of its
  * own to look like the design.
  */
-let camFrame: ImageBitmap | HTMLImageElement | null = null;
-let camFrameDirty = false;
+const camFrame: Record<'self' | 'lion', ImageBitmap | HTMLImageElement | null> = {
+  self: null, lion: null,
+};
+const camFrameDirty: Record<'self' | 'lion', boolean> = { self: false, lion: false };
 
 /** Grain, made once and slid about, rather than drawn pixel by pixel. */
 let camGrain: HTMLCanvasElement | null = null;
@@ -4560,6 +5915,14 @@ function grainTile(): HTMLCanvasElement {
  * the throttle or from slaving the camera to a mark.
  *
  * --cam-zoom-fov in map.html is where the line falls, in degrees.
+ *
+ * THE DRONE'S SCREEN IS NOT IN THIS. Its lens is not a lens anyone turns:
+ * it is worked out from how far off its spot is, so that the picture holds
+ * the same patch of ground however high the drone flies (UAV_CAM_SPAN_M in
+ * demo/main.ts). From 24,000 ft that comes to about two degrees — tight as
+ * a number, and not tight at all as a picture — so reading it against the
+ * line here would quietly swap its markings for the wide view's. It keeps
+ * the markings it is built with, which is what it has always shown.
  */
 // CAM_OVERLAY_ZOOM and camZoomed are declared at the top of the file: the
 // panes are dressed while the page is still setting itself up, which is
@@ -4570,31 +5933,35 @@ function dressCamOverlays(): void {
     const plain = o.dataset.plain ?? (o.dataset.plain = o.getAttribute('src') ?? '');
     const zoomed = CAM_OVERLAY_ZOOM[plain];
     if (!zoomed) continue;                       // no quiet set for this one
-    const want = camZoomed ? zoomed : plain;
+    const pane = paneOf(o);
+    const want = (pane && camZoomed[paneSource(pane)]) ? zoomed : plain;
     if (o.getAttribute('src') !== want) o.setAttribute('src', want);
   }
 }
 
-/** Called with every frame: the lens the picture was taken through. */
-function noteCamFov(fov: number | undefined): void {
-  if (typeof fov !== 'number') return;
+/** Called with every frame: the lens the picture was taken through, and the
+ *  camera that took it — each keeps its own markings. */
+function noteCamFov(fov: number | undefined, from: CamSource): void {
+  if (typeof fov !== 'number' || from === 'lion') return;
   const tight = fov <= cssNumber('--cam-zoom-fov', 4);
-  if (tight === camZoomed) return;
-  camZoomed = tight;
+  if (tight === camZoomed[from]) return;
+  camZoomed[from] = tight;
   dressCamOverlays();
 }
 
-/** A frame off the channel, whichever way it travelled. */
-function takeCamFrame(image: ImageBitmap | string): void {
+/** A frame off the channel, whichever way it travelled, kept under the name
+ *  of the camera that took it. */
+function takeCamFrame(image: ImageBitmap | string, from: CamSource): void {
   if (typeof image === 'string') {
     const img = new Image();
-    img.onload = () => { camFrame = img; camFrameDirty = true; };
+    img.onload = () => { camFrame[from] = img; camFrameDirty[from] = true; };
     img.src = image;
     return;
   }
-  if (camFrame && 'close' in camFrame) (camFrame as ImageBitmap).close();
-  camFrame = image;
-  camFrameDirty = true;
+  const had = camFrame[from];
+  if (had && 'close' in had) (had as ImageBitmap).close();
+  camFrame[from] = image;
+  camFrameDirty[from] = true;
 }
 
 /**
@@ -4714,23 +6081,48 @@ function redLayer(frame: CanvasImageSource): HTMLCanvasElement | null {
 }
 
 function drawCam(): void {
-  if (!camFrameDirty || !camFrame) return;
-  camFrameDirty = false;
+  for (const from of CAM_SOURCES) drawCamFrom(from);
+}
+
+/**
+ * ONE OF THE CAMERA'S LOOK KNOBS, for the camera that is being drawn.
+ *
+ * The aircraft's sensor is grey and grainy; the drone's is a colour one. So
+ * every knob is read TWICE OVER for the drone — --cam-lion-grey before
+ * --cam-grey, and so on — and whatever is not set for the drone falls back
+ * to the aircraft's own value. That is what keeps map.html honest: a number
+ * that is the same for both cameras is written once, and only what differs
+ * is written twice.
+ */
+function camLook(from: CamSource, name: string, fallback: number): number {
+  const mine = cssNumber(`--cam-${name}`, fallback);
+  return from === 'lion' ? cssNumber(`--cam-lion-${name}`, mine) : mine;
+}
+
+/** Draw the newest frame from ONE camera onto the screens showing it. */
+function drawCamFrom(from: CamSource): void {
+  const camFrameNow = camFrame[from];
+  if (!camFrameDirty[from] || !camFrameNow) return;
+  camFrameDirty[from] = false;
   const panes = Array.from(document.querySelectorAll<HTMLCanvasElement>('.camView'))
-    .filter((c) => c.clientWidth > 0 && c.clientHeight > 0);
+    .filter((c) => c.clientWidth > 0 && c.clientHeight > 0)
+    .filter((c) => { const p = paneOf(c); return !!p && paneSource(p) === from; });
   if (!panes.length) return;
 
-  const grey = cssNumber('--cam-grey', 100);
-  const contrast = cssNumber('--cam-contrast', 118);
-  const bright = cssNumber('--cam-brightness', 104);
-  const master = cssNumber('--cam-noise', 100) / 100;
-  const sky = (cssNumber('--cam-noise-sky', 7) / 100) * master;
-  const ground = (cssNumber('--cam-noise-ground', 20) / 100) * master;
-  const coarseSky = Math.max(1, cssNumber('--cam-noise-scale-sky', 1));
-  const coarseGround = Math.max(1, cssNumber('--cam-noise-scale-ground', 3));
+  const grey = camLook(from, 'grey', 100);
+  const contrast = camLook(from, 'contrast', 118);
+  const bright = camLook(from, 'brightness', 104);
+  const master = camLook(from, 'noise', 100) / 100;
+  const sky = (camLook(from, 'noise-sky', 7) / 100) * master;
+  const ground = (camLook(from, 'noise-ground', 20) / 100) * master;
+  const coarseSky = Math.max(1, camLook(from, 'noise-scale-sky', 1));
+  const coarseGround = Math.max(1, camLook(from, 'noise-scale-ground', 3));
   const dprNow = Math.min(window.devicePixelRatio || 1, 2);
-  const mask = (sky > 0 || ground > 0) ? groundMask(camFrame) : null;
-  const redOnly = redLayer(camFrame);
+  const mask = (sky > 0 || ground > 0) ? groundMask(camFrameNow) : null;
+  // THE RED MARK IS PUT BACK only where the colour was taken out. On a
+  // picture that keeps its colour there is nothing to put back — the mark is
+  // already red in it — so the whole pass is skipped.
+  const redOnly = grey > 0 ? redLayer(camFrameNow) : null;
 
   for (const pane of panes) {
     const w = pane.clientWidth;
@@ -4743,7 +6135,7 @@ function drawCam(): void {
     if (!g) continue;
     g.setTransform(dprNow, 0, 0, dprNow, 0, 0);
     g.filter = `grayscale(${grey}%) contrast(${contrast}%) brightness(${bright}%)`;
-    g.drawImage(camFrame, 0, 0, w, h);
+    g.drawImage(camFrameNow, 0, 0, w, h);
     g.filter = 'none';
     // The one thing that keeps its colour: the mark over the truck. It is
     // drawn again from the picture as it came, with everything that is not

@@ -50,6 +50,64 @@
       filter: drop-shadow(0 0 2px var(--hud-glow));
     }
 
+    /*
+     * WHAT IS ARMED, along the bottom of the window — the one thing the
+     * weapons screen says that the pilot needs without turning to the map.
+     *
+     * Two lines. The first is the store the designation box is standing on,
+     * written as the map writes it: the kind, then its place in the
+     * aircraft's own order — MK-84-S1 is the top-left 84, AA-S9 the left AA.
+     * It BREATHES while that store is armed, the same slow breath the store
+     * itself breathes on the weapons screen (1.5s, down to .35 and back:
+     * --weapon-blink-period and --weapon-blink-low in map.html).
+     *
+     * The second line is there only between the trigger and the strike: the
+     * seconds to impact, counted by the map and sent over ready written, so
+     * the figure here and the figure on the store are the same figure. While
+     * it is there the name HOLDS STILL — the store has gone, nothing is
+     * armed, and a breath would say it was.
+     *
+     * WHERE IT SITS AND HOW IT READS. It stands in the MIDDLE of the window,
+     * on the aircraft's own line, lifted clear of the bottom edge — the eye
+     * is already there, on the pipper, so it is read without looking away.
+     * Its typeface and colour are the HUD's own readouts': Roboto in --hud,
+     * with the same faint glow the tapes and the compass carry. It is set in
+     * REGULAR weight, not the readouts' medium: it is a quiet note of what
+     * is on the rails, not a figure to be watched, and a little larger makes
+     * up for the lighter stroke.
+     *
+     *   --store-cue-size    how big the writing is
+     *   --store-cue-weight  400 regular, 500 medium, 700 bold
+     *   --store-cue-lift    how far its foot stands off the bottom edge
+     */
+    :root {
+      --store-cue-size: 20px;
+      --store-cue-weight: 400;
+      --store-cue-lift: 56px;
+    }
+    #storeCue {
+      position: fixed; display: none; z-index: 5;
+      left: 50%; transform: translateX(-50%);
+      bottom: var(--store-cue-lift); text-align: center;
+      /* .text keeps its spaces, which here would turn the gaps between the
+         two lines' tags into blank lines of their own. */
+      white-space: normal;
+      font: var(--store-cue-weight) var(--store-cue-size) 'Roboto', system-ui, sans-serif;
+      line-height: 1.4; letter-spacing: .5px;
+      filter: drop-shadow(0 0 2px var(--hud-glow));
+    }
+    #storeCue.is-on { display: block; }
+    #storeCueName { animation: storeCueBlink 1.5s ease-in-out infinite; }
+    /* …and it stops the moment the store is let go. */
+    #storeCue.is-steady #storeCueName { animation: none; }
+    @keyframes storeCueBlink {
+      0%, 100% { opacity: 1; }
+      50%      { opacity: .35; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #storeCueName { animation: none; }
+    }
+
     /* transient message popup (e.g. a respawn notice) */
     #pop {
       position: fixed; left: 50%; top: 88px; transform: translateX(-50%);
@@ -142,6 +200,7 @@
   <div id="loading" class="text">Loading terrain… 0%</div>
   <div id="crash" class="text">You crashed! Press E to continue or R to restart.</div>
   <div id="pop"></div>
+  <div id="storeCue" class="text"><div id="storeCueName"></div><div id="storeCueClock"></div></div>
 
   <canvas id="compass"></canvas>
 

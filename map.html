@@ -349,29 +349,60 @@
 
       /* ── THE RELEASE ENVELOPE, Pink Zone.png ─────────────────────────
          The ground a weapon may be let go over. It hangs on ONE WAYPOINT —
-         the one named below — and travels with it, but it is a MARK and not
-         a piece of land: it keeps its size on the screen whatever the zoom,
-         and it never turns with the map.
+         the one named below — and travels with it. It is A PIECE OF LAND:
+         its width is in METRES, so it covers the same stretch of ground at
+         every range and draws smaller as the range is stepped out, exactly
+         as the fields under it do.
 
          It is drawn OVER the route on purpose. The picture is see-through
          where it is filled, so the line reads on through it and is plainly
-         underneath rather than cut off by it. */
+         underneath rather than cut off by it.
+
+         WHEN THE LAUNCHER IS BOMBED the envelope and its pink line leave the
+         map, because the strike also lets the mark go and there is nothing
+         left to be aiming at. CHOOSE THE WRECK AGAIN — on the map or in any
+         list — and they come straight back, to the very spot they left: a
+         struck launcher can be struck again, and this is the ground you have
+         to be over to do it. Let the mark go and they go with it. So it is
+         the CHOICE that decides what is on the map, not the wreck. */
       --zone-show: 1;
       --zone-at: AAT;          /* the waypoint it hangs on, by name */
-      --zone-size: 900px;      /* its width, in design px; height follows */
+      /* ITS WIDTH ON THE GROUND, IN METRES; the height follows the file.
+         14,360 is what it covered at the opening range before it was given a
+         ground size, so the first view is unchanged — but now that is what
+         it covers at EVERY range. */
+      --zone-size-m: 14360;
       --zone-opacity: 100%;    /* 100% as the file is drawn */
       /* 1 lays it ON THE GROUND: it turns with the map, so it covers the
          same land however the aircraft comes at it and nothing of it swings
          round as the aircraft turns. 0 nails it to the screen instead. */
       --zone-with-ground: 1;
-      --zone-turn: 0deg;       /* plus turns it clockwise, if ever wanted */
+      /* TURNED TO SQUARE IT WITH THE ROUTE. The shape is a hexagon with a flat
+         top and bottom, and laid on the ground those edges run due east-west;
+         this turns it, clockwise for plus.
+
+         WHICH LINE IT IS SQUARED TO is a real choice at the moment, because
+         the route does not run straight past the envelope: it comes up to AAT
+         on 354° and leaves on 018.5°, a twenty-four degree kick, so there are
+         two lines through the shape and no angle is square to both.
+
+             -6    square to the leg coming UP to AAT (354°)
+            +6.7   square to the run THROUGH the shape as a whole, 8A to 10A
+           +18.5   square to the leg LEAVING AAT (018.5°)
+
+         +6.7 is the middle of them, and the one the eye reads as square when
+         it follows the line across the shape. Straighten the route past AAT —
+         by carrying 10A west with the rest — and all three become -6 again. */
+      --zone-turn: 75deg;
       /* THE WAYPOINT IS NOT ITS MIDDLE. These move the shape's own middle off
-         the waypoint, in design px: x to the right, y downwards, both as the
-         shape itself lies. The waypoint then passes near the middle without
-         sitting on it, and the line leaves the middle — so the two do not
-         read as one thing. 0 and 0 puts the waypoint back at the middle. */
-      --zone-shift-x: 90px;
-      --zone-shift-y: -60px;
+         the waypoint, IN METRES ON THE GROUND: x to the right, y downwards,
+         both as the shape itself lies. The waypoint then passes near the
+         middle without sitting on it, and the line leaves the middle — so the
+         two do not read as one thing. 0 and 0 puts the waypoint back at the
+         middle. (These were 90 and -60 design px, which is this much ground
+         at the opening range.) */
+      --zone-shift-x-m: 0;
+      --zone-shift-y-m: -957;
       /* Which point of the picture sits on the waypoint — the dot at its
          middle, measured off the file. Only to be changed if the file is. */
       --zone-anchor-x: 49.8%;
@@ -391,6 +422,26 @@
       --zoneline-casing-width: 5px;
       --zoneline-dot: 18px;        /* the head, across */
       --zoneline-dot-edge: 2px;  /* and the black round it */
+
+      /* ── THE WEAPON ON ITS WAY, ON THAT LINE ─────────────────────────
+         From the trigger to the strike a small arrowhead walks the line,
+         in the line's own pink and the line's own black — change
+         --zoneline-colour or --zoneline-casing above and the head follows.
+
+         It starts at the envelope's end and its POINT touches the mark at
+         the instant the weapon lands: the same instant the seconds on the
+         store reach nought and the fire breaks over the truck in the other
+         window. One weapon is in the air at a time, so one head.
+
+         The point marks the place, not the middle of the shape — a weapon
+         is at its nose — so --shot-arrow-len runs BACKWARDS from the point
+         and the head only ever reaches as far as the mark. */
+      --shot-arrow-show: 1;         /* 0 leaves the line bare */
+      --shot-arrow-len: 13px;       /* point to base */
+      --shot-arrow-width: 15px;     /* across the base */
+      --shot-arrow-round: 0px;      /* how far back the corners are taken off;
+                                       0 is a sharp triangle */
+      --shot-arrow-casing-width: 2px;  /* the black round it */
 
       /* ── THE STRUCK MARKS, Target_after.png ──────────────────────────
          The same marks in every way that matters — they stand on their own
@@ -615,12 +666,15 @@
       --beam-length: 1000px;    /* how far it reaches, in design px; its
                                    width follows the picture's own shape */
       --beam-opacity: 100%;     /* 100% as the file is; lower is fainter */
-      --beam-nose: 32%;         /* where its point sits, as a share of the
+      --beam-nose: 0%;          /* where its point sits, as a share of the
                                    aircraft's width, ahead of the symbol's
-                                   middle: 0% the middle, 50% the very edge */
+                                   middle: 0% the middle, 50% the very edge.
+                                   It is 0, so the beam opens out of the
+                                   MIDDLE of the symbol and the aircraft sits
+                                   over its point. */
       --beam-turn: 0deg;        /* swings it off the nose; plus is to the
                                    RIGHT, minus to the left */
-      --beam-anchor-x: 47.3%;   /* where the point is ACROSS the picture,
+      --beam-anchor-x: 50%;     /* where the point is ACROSS the picture,
                                    measured off the file — only change this
                                    if the file itself changes */
 
@@ -648,6 +702,100 @@
       --friend-side: 1500px;     /* metres, the same */
       --friend-size: 120px;     /* his width on the screen, in design px */
       --friend-opacity: 100%;
+
+      /* ── THE DRONE OVER THE TARGET, Lion_icon.png ────────────────────
+         THE MARK IS THE DRONE. Once the flight is running it stands
+         wherever the real drone has got to in the simulator's world — the
+         simulator sends its place with every fix — so what is pressed here
+         and what is seen out of the window are one aircraft.
+
+         PRESS IT AND PRESS SLAVE and the camera holds the drone itself,
+         following it round its circle, in the same way pressing a truck and
+         Slave holds the truck. Only one thing is ever chosen on the map, so
+         choosing the drone lets a truck go and the other way about.
+
+         WHERE ITS CIRCLE IS SET: in demo/main.ts, beside the drone itself —
+         UAV_RADIUS_M, UAV_ALT_M, UAV_PERIOD_S, UAV_WAY. Not here.
+
+           --uav-size    its width ON THE SCREEN, in design px — a mark does
+                         not shrink into the distance, so the land under it
+                         grows and shrinks with the zoom and the drone does
+                         not.
+           --uav-show    0 and there is no drone on the map at all.
+           --uav-opacity how plainly it is drawn.
+
+         THE FOUR BELOW ARE ONLY FOR BEFORE THE FLIGHT IS STARTED. With no
+         simulator to say where the drone is, the map flies one of its own
+         on these so the screen is not empty; the moment a fix carries the
+         real one, they are not looked at again.
+
+           --uav-radius  the circle it holds, IN METRES on the ground.
+           --uav-period  how many SECONDS one lap takes. Smaller is faster.
+           --uav-way     1 goes round clockwise, -1 the other way.
+           --uav-start   where on the circle it begins, in degrees from north. */
+      --uav-show: 1;            /* 0 and there is no drone at all */
+      --uav-radius: 2000px;     /* metres, despite the px — as the wingman's are */
+      --uav-period: 120;         /* seconds a lap */
+      --uav-way: 1;             /* 1 clockwise, -1 anticlockwise */
+      --uav-start: 0deg;
+      --uav-size: 60px;        /* its width on the screen, in design px */
+      --uav-opacity: 100%;
+      /* ── THE DRONE'S NAME AND HEIGHT, beside its mark ────────────────
+         Two lines: how high it is flying, and what it is called — the same
+         pair her list writes on its row (04', 24', 31').
+
+         IT NEVER TURNS WITH THE DRONE. The drone's picture swings round as
+         it goes about its circle; the writing is laid down outside that
+         turn, upright, at a fixed place beside it. WHERE is given as an
+         hour on a clock face laid over the mark: twelve is straight up and
+         the hours run round the way a clock's do, so 5.5 is half past five
+         — below the mark and a little to its right. --uav-label-out is how
+         far from the middle of the mark it hangs, and the two lines grow
+         right and down from there.
+
+         THE FIGURE IS THE DRONE'S REAL HEIGHT. It is set ONCE, in
+         demo/main.ts as UAV_ALT_M — the height it holds over the ground the
+         truck stands on — and the drone flies at that height while the map
+         writes it. There is nothing to keep in step: 7,315.2 m is 24,000 ft,
+         and --uav-height-per 1000 writes that as 24, which is how a height
+         is said in the air — THOUSANDS of feet, so 24 is twenty-four
+         thousand. --uav-height-digits pads a low one, so 4,000 ft reads 04
+         and not 4, and --uav-height-mark is what follows the figure.
+         --uav-height-feet is used only BEFORE THE FLIGHT IS STARTED, like
+         the four knobs above.
+
+         THE DRONE FLIES HIGH AND ITS PICTURE DOES NOT CHANGE. Its lens is
+         not given in degrees but as how much GROUND fills its picture —
+         UAV_CAM_SPAN_M in demo/main.ts — so raising or lowering it tightens
+         or opens the lens by itself and the camera screen goes on showing
+         the same patch of earth at the same size.
+
+         THE TWO LINES ARE DRESSED APART: the height larger, medium weight
+         and white; the name smaller, regular weight and a shade off white,
+         so the figure reads first and the name does not shout. Roboto here
+         is a variable font, so any weight between them works too. */
+      --uav-label-show: 1;        /* 0 and the mark carries no writing */
+      --uav-label-at: 5.5;        /* the hour on the clock: 5.5 = half past five */
+      --uav-label-out: 34px;      /* how far out from the middle of the mark */
+      --uav-label-gap: 2px;       /* between the two lines */
+      --uav-label-edge: #000000;  /* the outline they are drawn with */
+      /* The outline is laid HALF IN, HALF OUT of the letter, so a thick one
+         eats into a light weight and makes it read heavy. 2px suits 16-18px
+         writing; raise it and the letters start to look bold again. */
+      --uav-label-edge-width: 2px;
+      /* the top line: the height */
+      --uav-height-size: 18px;
+      --uav-height-weight: 500;   /* medium */
+      --uav-height-colour: #FFFFFF;
+      --uav-height-per: 1000;     /* feet to one figure: 24,000 ft -> 24 */
+      --uav-height-digits: 2;     /* 04, not 4 */
+      --uav-height-mark: "′";    /* what follows the figure */
+      --uav-height-feet: 24000;   /* until the simulator says */
+      /* the line under it: the name */
+      --uav-name-size: 16px;
+      --uav-name-weight: 400;     /* regular — it is not meant to stand out */
+      --uav-name-colour: #DBDBDB;
+      --uav-name: "Lion";
       /* The two distances above are in METRES ON THE GROUND, not pixels: he
          keeps his station as the zoom changes, exactly as a real wingman
          would. The px is only there because CSS wants a unit on a number. */
@@ -664,8 +812,8 @@
       --map-aircraft-y-middle: 0.5;
 
       /* ── top-right stack, in the order they appear ──    width / height ── */
-      --btn-layout-w: 212px;      --btn-layout-h: 66px;   /* layout.png */
-      --btn-icon-w: 64px;        --btn-icon-h: auto;     /* icon.png */
+      --btn-layout-w: 254.4px;    --btn-layout-h: 79.2px; /* layout.png */
+      --btn-icon-w: 91.76px;     --btn-icon-h: auto;     /* icon.png */
       /* THE NORTH DOT on that button: a dot riding the pale ring drawn into
          icon.png, at whatever angle true north is — the same north the ring
          round the aircraft shows, so the two always agree.
@@ -674,20 +822,25 @@
            --iconnorth-radius  how far out it sits, as a share of the button's
                                own width. 32.1% is where the ring is drawn in
                                the artwork; re-measure it if the file changes. */
-      --iconnorth-size: 6px;
+      --iconnorth-size: 8.6px;
       --iconnorth-color: #FF3E3F;
       --iconnorth-radius: 32.1%;
-      --btn-23d-w: 64px;         --btn-23d-h: 86px;      /* 2:3d.png — Figma 64 x 86 */
-      --btn-zoom-w: 64px;        --btn-zoom-h: 160px;     /* zoom in:out_NN.png */
+      /* THE SEVEN IN THE RIGHT-HAND CHROME ARE ALL ONE WIDTH — 91.76, the
+         Figma width — and every height is `auto`, which is to say the
+         artwork's own. The files are exported at four times the design and
+         each measures 367 px of button across, so a width is all any of them
+         needs and no height can ever be out of step with its picture. */
+      --btn-23d-w: 91.76px;      --btn-23d-h: auto;      /* 2:3d.png */
+      --btn-zoom-w: 91.76px;     --btn-zoom-h: auto;     /* zoom in:out_NN.png */
       /* How much of the zoom button each key takes, measured from its own end.
          The artwork draws them from 10% to 31% and from 68% to 89% of the
          height; 38% covers each key with room to spare and leaves the number
          in the middle inert. */
       --zoom-key-h: 38%;
-      --btn-location-w: 64px;    --btn-location-h: auto; /* Location on the map.png */
+      --btn-location-w: 91.76px; --btn-location-h: auto; /* Location on the map.png */
 
       /* ── top-LEFT: friends, and the targets panel under them ── */
-      --btn-friends-w: 112px;    --btn-friends-h: 66px;  /* Friends and targets */
+      --btn-friends-w: 134.4px;  --btn-friends-h: 79.2px; /* Friends and targets */
       /* layout.png is three buttons drawn as one plate, and only its LEFT one
          is live. This is where that part ends, as a share of the plate's width:
          its glyph is centred at 17.7% and the next one starts at 33.8%, so a
@@ -755,15 +908,39 @@
       --pane-button-x-half: 28px;
       --pane-button-y-half: 18px;
       --pane-button-w: 197.79px;   /* how wide the button is drawn */
-      --pane-menu-gap: 3.42px;     /* the air between the button and the menu */
+      /* THE AIR BETWEEN THE BUTTON AND THE MENU, in design px. It is the
+         air you can SEE: where the files are drawn with a margin round
+         them that margin is measured and taken off, so this is the gap
+         between the button's own shape and the menu's, either way. */
+      --pane-menu-gap: 9px;        /* the air between the button and the menu */
+      /*
+       * AND IN THE NARROW BAR BESIDE THE MAP — the three-way arrangement, the
+       * one the 3_layout artwork is drawn for. The screen there is the
+       * smallest of the lot, so in THAT arrangement only its button is drawn
+       * a little smaller and set a little nearer its edge. Nothing else in
+       * the file is touched, and no other arrangement sees these at all.
+       */
+      --pane-button-w-bar: 168px;   /* the screen's own button there */
+      --pane-button-x-bar: 6px;     /* in from the LEFT edge */
+      /* THE SCREEN ALREADY SHOWN, picked out in the drop-down.
+         WHAT IS COLOURED IS THE ROW: a rounded pill is laid over it in this
+         colour and the writing and the mark stay white on top of it, the
+         way the design draws it.
+         The pill is the row's own band, drawn in from the panel's edges by
+         --pane-menu-pill-pad on every side — a share of the PICTURE's width
+         — and its corners rounded by --pane-menu-pill-round, a share of the
+         PILL's own height. Both are shares, so they hold however the menu
+         is exported. */
       --pane-menu-mark: #1FC4B6;   /* the colour of the screen already shown */
+      --pane-menu-pill-pad: 1.38;  /* % of the picture's width, on every side */
+      --pane-menu-pill-round: 35;  /* % of the pill's height */
       /* THE TALL LIST, in the five-way arrangement only. The right-hand
          column opens with the targets list alone, as tall as both screens
          together; the camera and the weapons sit on the left. Choose anything
          else on that list and the column splits back into two, with this
          screen underneath. Choose the list again and it goes tall again.
          No other screen is ever drawn tall, and the list is tall only there. */
-      --pane-right-spare: radar;   /* ew, weapon, radar, targets or cam */
+      --pane-right-spare: radar;   /* ew, weapon, radar, targets, self, lion */
       /* THE TALL LIST IS AS TALL AS THE TWO SCREENS IT REPLACES — exactly:
          both of them plus the gap between them, so its column stands level
          with the one beside it, top and bottom, and the button in its corner
@@ -776,18 +953,60 @@
          it at any height and the column still lines up. */
 
       /* ── THE WEAPONS SCREEN ──────────────────────────────────────────
-         One of the eight stores is the SELECTED one, and it breathes: its
+         One of the ten stores is the SELECTED one, and it breathes: its
          brightness falls away and comes back, over and over. Pressing any
          other store hands the blink to it. Nothing else happens — it is a
          mark of which store is chosen, and nothing in the flight depends
          on it.
 
-         The eight, in the order they are numbered: 1-2 the top pair of 84s,
-         3-4 the middle pair, 5-6 the bottom pair, 7 the left AA and 8 the
-         right AA. Odd numbers are the left of each pair. */
+         The ten, in the order they are numbered:
+             1-2   the top pair of 84s
+             3-6   the four 82s across the middle, LEFT TO RIGHT
+             7-8   the bottom pair of 84s
+             9     the left AA          10   the right AA
+         Odd numbers are the left of each pair. (The middle used to hold two
+         84s, numbered 3-4; they are the four 82s now, so 3 is the leftmost
+         82 and everything after it has moved along by two.)
+
+         THE FOUR 82s SHARE TWO HOTSPOTS BETWEEN THEM, one per pair — they
+         are small and they stand close, so a hotspot round one alone would
+         be a sliver. Pressing anywhere in a pair takes the OUTER one of the
+         two first, the one nearer the wingtip, the INNER one on the next
+         press, and round again. The right pair therefore goes right then
+         left, and the left pair left then right.
+
+         AND THE STRIKE HANDS THE MARK ON. Firing a store does not leave the
+         screen with nothing chosen, and it does not move the mark on either:
+         the store that was fired KEEPS the white box while its weapon is in
+         the air — faint, counting, no longer blinking — and only when it
+         lands and leaves the screen do the box and the blink pass to the next
+         store still aboard, in the order above, coming round at the end. So
+         one shot follows another without pressing anything between, and the
+         box always stands on the store the screen is about. Only an empty
+         aircraft leaves nothing marked.
+
+         Between the trigger and the strike nothing is armed, so the trigger
+         says nothing in those seconds: one shot at a time. */
       --weapon-start: 3;           /* which one is selected when it opens */
-      --weapon-gone-colour: #061905;  /* the screen's own background: what is
-                                         left where a fired store used to be */
+      /* WHAT IS LEFT WHERE A FIRED STORE USED TO BE: the same screen drawn
+         WITHOUT the stores, weapon_5_layout_empty.png, shown through the
+         shape of the store that has gone. The aircraft's green line runs
+         behind most of the stores, so the empty picture is the only way the
+         line can stay whole where one of them leaves — anything else cuts a
+         piece out of it. The colour below is only what shows if that file
+         ever fails to load, and it is the flat green-black the screen is
+         drawn on.
+
+         THE TWO PICTURES MUST LIE ON EACH OTHER EXACTLY. The empty export
+         sits 24 of its own 2284 pixels to the left of the full one, which is
+         the 1.051% below; if you ever re-export the pair lined up, set both
+         of these to 0. Larger dx moves the empty picture RIGHT, larger dy
+         moves it DOWN, both in screen per cent. The way to see it: fire the
+         left AA — the long green line behind it should run straight through
+         where the missile was, with no step in it. */
+      --weapon-empty-dx: 1.051%;
+      --weapon-empty-dy: 0%;
+      --weapon-gone-colour: #061905;  /* only if the empty picture is missing */
       --weapon-blink-period: 1.5s; /* a whole breath; larger is slower */
       --weapon-blink-low: 0.35;    /* how far the brightness falls: 1 is no
                                       blink at all, 0 fades right out */
@@ -795,8 +1014,71 @@
                                       file as it is; drop it a little if the
                                       chosen store reads brighter than its
                                       neighbours at the top of the breath */
-      --weapon-hotspot-pad: 1%;    /* how much easier than the picture the
+      /* THE WHITE CORNERS ROUND THE STORE THAT IS CHOSEN — the same
+         designation box the map draws on the ground, and the same picture:
+         TD_box.png, each corner showing its own quarter of it.
+
+         The BOX is the store's own size, so it is tall round an 84 and short
+         round an 82; each CORNER is drawn at its own size, as a real
+         designation box is, rather than being stretched with the box.
+
+         --weapon-td-corner is that size, as a share of the screen. Two of
+         them stand side by side across the narrowest store, the 82, whose
+         box is about 4.4% of the screen wide — so much over 2% and the pair
+         meet in the middle. It does not blink: the blink is what says which
+         store is chosen, and a second thing moving would only blur that. */
+      --weapon-td-corner: 1.6%;    /* how big one corner is drawn */
+      --weapon-td-pad: 0.7%;       /* how far outside the store the box sits */
+      --weapon-td-opacity: 100%;   /* 100% as the file is; less to quieten it */
+
+      --weapon-hotspot-pad: 1.6%;    /* how much easier than the picture the
                                       stores are to hit, in pane per cent */
+
+      /* ── A STORE ON ITS WAY ──────────────────────────────────────────────
+         Between the trigger and the strike the store does NOT leave the
+         screen. It stops blinking, goes faint, and carries the seconds to
+         impact on its middle; at nought it goes for good. The seconds are
+         the simulator's own flight time (WEAPON_FLIGHT_S in demo/main.ts,
+         ten of them), sent over with the trigger — change it there and the
+         figure here follows.
+
+         How faint: the fired store is covered by its own shape in the
+         background's colour, and this is how far that cover is brought up.
+         100% is gone altogether, 0% is the store untouched. */
+      --weapon-falling-fade: 65%;
+
+      /* THE FACE OF THE COUNTDOWN — the dark tablet with the green ring.
+         Its WIDTH is a share of the screen and its height follows from the
+         shape; everything inside it is a share of ITS OWN HEIGHT (cqh: 1cqh
+         is one per cent of the tablet's height), so the ring, the corners
+         and the digits all keep their proportions whatever size it is set
+         to and whichever arrangement the pane is in.
+
+         It is one size for every store — a short 82 and a tall 84 carry the
+         same tablet — because it is a figure to be read, not a part of the
+         store's own picture, and being READ is what it is for.
+
+         Where the width runs out: the four 82s stand about 6.5% of the
+         screen apart, so at 6.4% or less no two tablets can ever meet, and
+         above that a pair of NEIGHBOURING 82s fired within the same ten
+         seconds would overlap a little. Nothing else is close enough to
+         touch, and the AAs at the edges have room to 14%. */
+      --weapon-timer-w: 9%;          /* how wide the tablet is, in screen % */
+      --weapon-timer-aspect: 2;      /* wide ÷ tall; the picture's own shape */
+      --weapon-timer-fill: #14151a;  /* the dark face behind the digits */
+      --weapon-timer-ring: #22ff00;  /* the green edge, and its glow */
+      --weapon-timer-text: #ffffff;  /* the digits */
+      --weapon-timer-border: 5cqh;   /* how thick the green edge is drawn */
+      --weapon-timer-radius: 18cqh;  /* how round its corners are */
+      --weapon-timer-glow: 9cqh;     /* how far the green spills; 0 is none */
+      /* HOW TALL THE DIGITS STAND, as a share of the tablet's own height.
+         At 64 the figures take about 84% of the tablet's width, which
+         leaves a clear margin inside the green edge; past about 70 they
+         begin to touch it. To have them larger than that, widen the tablet
+         with --weapon-timer-w rather than pushing this further — the digits
+         grow with it and keep their margin. */
+      --weapon-timer-font: 64cqh;    /* how tall the digits stand */
+      --weapon-timer-track: 1cqh;    /* how far apart they are set */
       /*
        * WHAT THE SCREENS DO ON A WINDOW THAT IS NOT THE FRAME'S SHAPE.
        *
@@ -871,6 +1153,25 @@
       --cam-noise-scale-ground: 3;
       --cam-noise-split: 45%;         /* the brightness the two meet at */
       --cam-noise-soften: 45%;        /* how wide that meeting is */
+
+      /* ── THE DRONE'S CAMERA LOOKS DIFFERENT ──────────────────────────
+         The aircraft's own camera is a grey sensor; the drone carries a
+         COLOUR one, so its picture comes through as it is — sky blue,
+         ground green, the truck its own colour.
+
+         Every --cam-lion-* here stands in for the --cam-* above it, and
+         ONLY on the drone's picture: the aircraft's screen is untouched by
+         anything in this block. Rub one out and that one falls back to the
+         aircraft's value, so there is never a number to keep in two places.
+
+         The grain is kept, and kept lighter: a colour sensor on a steady
+         mount a few hundred metres up gives a cleaner picture than a grey
+         one bolted to a jet. Set --cam-lion-noise to 0 for a picture with
+         no grain at all. */
+      --cam-lion-grey: 0%;            /* 0 keeps the colour; 100 is grey */
+      --cam-lion-contrast: 104%;
+      --cam-lion-brightness: 100%;
+      --cam-lion-noise: 45%;
 
       /* ── THE RADAR SCREEN's traces ───────────────────────────────────
          The artwork (radar_5_layout.png) carries the grid and the frame; the
@@ -952,10 +1253,15 @@
       --layoutglyph-w: 38%;        /* share of its pane's width */
       --layoutglyph-max: 22px;     /* …but never bigger than this */
 
-      /* `match` = as wide as the button it drops out of. The one picture
-         below is whichever of the three lists is on show — both lists
-         together, or one of them at full length. */
-      --btn-friendlist-w: match; --btn-friendlist-h: auto; /* the open list */
+      /* The one picture below is whichever of the three lists is on show —
+         both lists together, or one of them at full length.
+
+         It is given its own WIDTH IN DESIGN PIXELS, not `match`. `match`
+         would make it as wide as the button it drops out of, and the two
+         would grow together; the button has since been made a fifth bigger
+         on its own, and the lists were to stay as they were. The 112 here is
+         the width they had when the two were still of a piece. */
+      --btn-friendlist-w: 112px; --btn-friendlist-h: auto; /* the open list */
       /* The two headings are not sized from here: they are laid into the
          slots their lists leave for them, 408 of the 448 a list is across,
          and they follow the list's own size exactly. */
@@ -1026,6 +1332,34 @@
          A target picked out on the map is ringed in every list that names
          it — the targets screens and the foes list — and picking a row in
          a list does the same the other way about. This is that ring. */
+      /* ── A STRUCK TARGET, IN EVERY LIST ─────────────────────────────
+         When a mark is bombed it turns from red to grey on the map, and
+         its row turns with it in every list that names it. Nothing is
+         drawn over the artwork: each list has a SECOND PICTURE with that
+         row already burnt, and the list simply wears it instead.
+
+         The four pairs, whole and burnt:
+             list_5_layout_all.png   list_5_layout_all_bn222.png
+             list_3_layout.png       list_3_layout_bn222.png
+             Foes_FULL_list_open.png
+                                     Foes_FULL_list_open_bn222.png
+             Friend and Foes_list_open.png
+                                     Friend and Foes_list_open_bn222.png
+
+         So far it is BN222 that is drawn burnt — that is what the _bn222
+         in the names says. Another target bombed changes nothing in the
+         lists until its own pictures are drawn; add the pair and the
+         name of its row to LIST_BURNT in demo/map.ts and it follows.
+
+         A burnt picture must be the same picture with ONE ROW repainted:
+         the same size, the same rows in the same places. Everything else
+         — which row a press lands on, where the white ring is drawn,
+         where the headings sit — is measured off the whole one and used
+         for both, so a burnt face exported at another size or with a row
+         moved would put all of that out.
+
+         START AGAIN puts every list back to its whole face, on the same
+         frame the marks come back red. */
       /* ── THE EW SCREEN ──────────────────────────────────────────────
          The threat the map is showing is shown here too, at its BEARING AND
          RANGE from the aircraft rather than on its spot of ground: the
@@ -1083,12 +1417,12 @@
          between them: what you see is a button being pressed, not a picture
          being swapped. 261 is what 64 across comes to at the file's own
          shape. */
-      --btn-datamode-w: 64px;    --btn-datamode-h: 261px;
+      --btn-datamode-w: 91.76px; --btn-datamode-h: auto;
       /* How much of it from the top answers a press — the top cell ends a
          quarter of the way down. */
       --btn-datamode-key: 25%;
-      --btn-tool-w: 64px;        --btn-tool-h: 64px;     /* Tool.png */
-      --btn-layers-w: 64px;      --btn-layers-h: 64px;   /* Layers.png — Figma 64 x 64 */
+      --btn-tool-w: 91.76px;     --btn-tool-h: auto;     /* Tool.png */
+      --btn-layers-w: 91.76px;   --btn-layers-h: auto;   /* Layers.png */
     }
 
     /* The face the design uses for the panel's clock — the same file for every
@@ -1244,13 +1578,15 @@
     /* The radar screen: its artwork is the grid and the frame, and the traces
        on it — the triangles and the squares — are drawn over it, live. */
     /*
-     * THE NAME BUTTON on each of the four screens, and the menu it opens.
+     * THE NAME BUTTON on every screen, and the menu it opens.
      *
      * Every screen's artwork already has a name button drawn into it, in its
      * own top-left corner. Those baked ones differ a little from screen to
-     * screen, so a real button — the artwork in Cam_button.png and the rest —
-     * is laid over the top of them, in the same place on every screen, and it
-     * is what reacts to a press. The menu drops from under it.
+     * screen, so a real button — the artwork in EW_button.png and its
+     * fellows — is laid over the top of them, in the same place on every
+     * screen, and it is what reacts to a press. The menu drops from under
+     * it, and names all six screens: the four instruments, and the two
+     * cameras under Videos.
      */
     /*
      * WHY THE DROP FROM THE TOP IS A MARGIN AND NOT A `top`.
@@ -1277,20 +1613,30 @@
      * THE MENU HANGS FROM THE FOOT OF THE BUTTON, and works it out from the
      * two pictures rather than from a number of its own:
      *
-     *   Cam_button.png and the rest are 709 x 225, and the pill in them is
-     *   202 of those 225 tall — so the pill's foot is the button's width
-     *   times 202/709 below its top.
-     *   Drop-down.png is 709 x 1103 with its panel starting 22 down, so the
-     *   panel's own top inset is the width times 22/709, which is taken off
-     *   again so that the AIR between the two is --pane-menu-gap exactly.
+     *   The button pictures are drawn with air round their pill, so the
+     *   pill's foot is the button's width times --pane-button-pill below
+     *   its top. THAT IS READ OFF THE PICTURE when it loads; the number
+     *   written in below is only what is used until then, and is what the
+     *   present 760 x 180 files come to (180/760). Every button is drawn to
+     *   that same frame, the two video ones included, so one of them speaks
+     *   for all six.
+     *   Drop-down.png is drawn with air above its panel, and that air is
+     *   taken off again so that the gap between the two is --pane-menu-gap
+     *   exactly. HOW MUCH AIR IS READ OFF THE PICTURE ITSELF when it loads
+     *   and handed back here as --pane-menu-inset, a share of the picture's
+     *   width — so re-exporting the menu with another margin, or at another
+     *   size, needs nothing changed here. The number written in below is
+     *   only what is used before the picture has been read; it is what the
+     *   760 x 1161 file comes to (13/760).
      */
     .paneMenu {
       position: absolute; z-index: 4; display: none;
       left: calc(var(--pane-button-x) * var(--ui-scale-num, 1));
       top: calc((var(--pane-button-y)
-                 + var(--pane-button-w) * 202 / 709
+                 + var(--pane-button-w) * var(--pane-button-pill, 0.23684)
                  + var(--pane-menu-gap)
-                 - var(--pane-button-w) * 22 / 709) * var(--ui-scale-num, 1));
+                 - var(--pane-button-w) * var(--pane-menu-inset, 0.01711))
+                * var(--ui-scale-num, 1));
       width: calc(var(--pane-button-w) * var(--ui-scale-num, 1));
       pointer-events: auto;
     }
@@ -1315,19 +1661,29 @@
       animation: weaponBlink var(--weapon-blink-period, 1.6s) ease-in-out infinite;
     }
     .weaponBlink.is-off { display: none; }
-    /* A STORE THAT HAS BEEN FIRED. The shape file is used as a stencil and
-       filled with the colour of the screen's own background, so the store it
-       covers simply is not there any more: no rectangle, no seam, an empty
-       pylon. --weapon-gone-colour is that background — #061905, the flat
-       green-black the weapons artwork is drawn on. */
+    /* A STORE THAT HAS BEEN FIRED. The shape file is used as a stencil, and
+       what shows through it is the SAME SCREEN WITHOUT THE STORES, laid in at
+       the pane's own size so it falls exactly on the picture underneath. So
+       the store simply is not there any more — no rectangle, no seam, an
+       empty pylon — and the aircraft's green line, which runs behind most of
+       the stores, carries straight on through the gap.
+
+       The flat colour behind it is what would show if the empty picture ever
+       went missing; the size and the sliding are set in placeWeaponGone. */
     .weaponGone {
       position: absolute; pointer-events: none;
       background-color: var(--weapon-gone-colour, #061905);
+      background-image: url("./icons/weapon_5_layout_empty.png");
+      background-repeat: no-repeat;
       -webkit-mask-size: 100% 100%; mask-size: 100% 100%;
       -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
       -webkit-mask-position: center; mask-position: center;
     }
     .weaponGone.is-off { display: none; }
+    /* …and the same stencil only PART of the way up, for the seconds the
+       weapon is in the air: the store is still there to be seen, plainly
+       spent, with its countdown standing on it. */
+    .weaponGone.is-falling { opacity: var(--weapon-falling-fade, 55%); }
     @keyframes weaponBlink {
       0%, 100% { filter: brightness(var(--weapon-blink-high, 1)); }
       50%      { filter: brightness(var(--weapon-blink-low, 0.45)); }
@@ -1336,6 +1692,67 @@
     .weaponStore {
       position: absolute; margin: 0; padding: 0; border: 0;
       background: none; cursor: pointer; pointer-events: auto;
+    }
+    /*
+     * ONE CORNER OF THE DESIGNATION BOX round the chosen store.
+     *
+     * TD_box.png is 211 x 211 and its corner — the elbow, the gap and the
+     * tick after it — takes the first 78 of those, which is 37% of the file.
+     * So the picture is laid in at 211/78 of the corner's own size, 270%, and
+     * pulled to whichever edge this corner belongs to: each one then shows
+     * exactly its own quarter of the box, at its own shape, however tall or
+     * narrow the store it is standing round.
+     *
+     * Its size is a share of the SCREEN, not of the box, which is what keeps
+     * a corner a corner on a store four times taller than it is wide. Where
+     * it goes is set when a store is chosen — see placeWeaponTd.
+     */
+    .weaponTdCorner {
+      position: absolute; display: none; pointer-events: none; z-index: 2;
+      width: var(--weapon-td-corner, 1.6%);
+      height: var(--weapon-td-corner, 1.6%);
+      opacity: var(--weapon-td-opacity, 100%);
+      background-image: url("./icons/TD_box.png");
+      background-repeat: no-repeat;
+      background-size: 270% 270%;
+    }
+    .weaponTdCorner.is-on { display: block; }
+    .weaponTdCorner.is-tl { background-position: left top; }
+    .weaponTdCorner.is-tr { background-position: right top; }
+    .weaponTdCorner.is-bl { background-position: left bottom; }
+    .weaponTdCorner.is-br { background-position: right bottom; }
+
+    /*
+     * THE SECONDS TO IMPACT, standing on the middle of a store in the air.
+     *
+     * Two elements, and each has one job. The OUTER one is nothing but a
+     * place and a size: it is put on the store's centre by buildWeaponPane
+     * and pulled back by half of itself, and it declares itself a container
+     * so that everything inside can be measured against its own height.
+     * The INNER one is the tablet itself — face, ring, glow and digits —
+     * drawn in cqh, hundredths of that height, so the whole thing scales as
+     * one picture however wide the knob sets it or however the panes are
+     * arranged. See --weapon-timer-* in the knobs above.
+     */
+    .weaponTimer {
+      position: absolute; display: none; pointer-events: none; z-index: 3;
+      transform: translate(-50%, -50%);
+      width: var(--weapon-timer-w, 9%);
+      aspect-ratio: var(--weapon-timer-aspect, 2);
+      container-type: size;
+    }
+    .weaponTimer.is-on { display: block; }
+    .weaponTimer > span {
+      position: absolute; inset: 0; box-sizing: border-box;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--weapon-timer-fill, #14151a);
+      border: var(--weapon-timer-border, 5cqh) solid var(--weapon-timer-ring, #22ff00);
+      border-radius: var(--weapon-timer-radius, 18cqh);
+      box-shadow: 0 0 var(--weapon-timer-glow, 9cqh) var(--weapon-timer-ring, #22ff00);
+      color: var(--weapon-timer-text, #ffffff);
+      font: 600 var(--weapon-timer-font, 46cqh)/1 'Roboto', system-ui, sans-serif;
+      letter-spacing: var(--weapon-timer-track, 1cqh);
+      white-space: nowrap;
     }
 
     .radarPane { position: relative; }
@@ -1438,6 +1855,10 @@
     }
     #screen.is-side #sideCol .sidePane {
       width: var(--sidebar-w-px, calc(var(--layout-side-pane) * 1px * var(--ui-scale-num, 1)));
+      /* The button in the corner of this, the smallest screen: a size and an
+         inset of its own, so it does not crowd what is under it. */
+      --pane-button-w: var(--pane-button-w-bar, 168px);
+      --pane-button-x: var(--pane-button-x-bar, 6px);
     }
     #screen.is-side #sideTop { height: var(--sidebar-top-px, auto); }
     #screen.is-side #sideBottom { height: var(--sidebar-bottom-px, auto); }
@@ -1550,10 +1971,16 @@
      * one for each way the panel can stand, with the two bars as pictures of
      * their own — nothing is stretched or cut to fit.
      */
+    /* The button, and under it whichever list is open — the list CENTRED on
+       the button rather than ranged along its left edge, since the button is
+       the wider of the two and a list hung off its side reads as a slip.
+       Centring works on what is SEEN: demo/map.ts pulls each picture in by
+       its own glow, so a picture's margin box is its visible shape, and it is
+       margin boxes that are centred here. */
     #mapButtonsLeft {
       position: absolute; top: var(--btn-edge-fitted, var(--btn-edge));
       left: var(--btn-edge-fitted, var(--btn-edge)); z-index: 11;
-      display: flex; flex-direction: column; align-items: flex-start;
+      display: flex; flex-direction: column; align-items: center;
       gap: var(--btn-gap-fitted, var(--btn-gap));
       pointer-events: none;
     }
@@ -1828,7 +2255,7 @@
          inside is built to match (see the pane kinds in demo/map.ts). The
          data-pane attribute is only what it opens on. -->
     <div class="sideCol" id="leftCol">
-      <div class="sidePane" data-pane="cam"></div>
+      <div class="sidePane" data-pane="self"></div>
       <div class="sidePane" data-pane="weapon"></div>
     </div>
 
@@ -1934,7 +2361,7 @@
            the five-way arrangement: the picture is drawn into every camera
            canvas that is on show, so whichever arrangement is up gets it, at
            whatever size it has there. -->
-      <div class="sidePane" data-pane="cam"></div>
+      <div class="sidePane" data-pane="self"></div>
     </div>
 
     <!-- The map with a bar beside it. Both of these are SLOTS like every
@@ -1945,7 +2372,7 @@
          wears its usual face. -->
     <div class="sideCol" id="sideCol">
       <div class="sidePane" id="sideTop" data-pane="targets"></div>
-      <div class="sidePane" id="sideBottom" data-pane="cam"></div>
+      <div class="sidePane" id="sideBottom" data-pane="self"></div>
     </div>
 
     <!-- …and two on its right. -->
