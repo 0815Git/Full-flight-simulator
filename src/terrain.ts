@@ -21,8 +21,12 @@ import {
   type TerrainStatus,
   type WorldConfig,
 } from './config';
-import { groundHeight, type HeightGrids } from './height';
-import { desiredTiles, keyId, outOfHorizon, type LodOptions, type TileKey } from './lod';
+import {
+  groundHeight, sightBlocked, type HeightGrids, type SightOptions,
+} from './height';
+import {
+  desiredTiles, detailTiles, keyId, outOfHorizon, type LodOptions, type TileKey,
+} from './lod';
 import { TerrainMaterial, bitmapTexture, dataTexture } from './material';
 import { TileSource, type TileDrop, type TilePayload } from './source';
 import { defaultNormals } from './synth';
@@ -149,6 +153,9 @@ export class Terrain {
   private readonly zoomGeometries: THREE.BufferGeometry[] = [];
   private readonly defaultNormalTex: THREE.DataTexture;
   private lastDesiredPos = new THREE.Vector3(-9_999_999.9, -9_999_999.9, -9_999_999.9);
+  /** A fixed spot kept sharp besides the camera — see {@link watchSpot}. */
+  private watchAt: THREE.Vector3 | null = null;
+  private watchDetail = 0;
   private coverageDirty = true;
   private frame = 0;
   private readonly bakedOffset = new THREE.Vector3();
@@ -186,9 +193,41 @@ export class Terrain {
     parent?.add(this.group);
   }
 
+  /**
+   * KEEP ONE FIXED SPOT SHARP, wherever the camera happens to be.
+   *
+   * Detail normally follows the camera, which is right for the ground it is
+   * flying over and wrong for a place being watched through some other lens.
+   * Give a spot here and the ground within `detail` metres of it is held at
+   * the finest zoom from the first frame, coarsening outwards, whatever the
+   * camera is doing — a handful of tiles, and they are kept resident because
+   * they are wanted, like any other.
+   *
+   * `at` is in ABSOLUTE space (the same space the camera is reduced to), so
+   * it survives every rebase without being touched. Pass null to let it go.
+   */
+  watchSpot(at: THREE.Vector3 | null, detail = 0): void {
+    const had = this.watchAt;
+    const same = (!had && !at) || (!!had && !!at && had.equals(at) && this.watchDetail === detail);
+    if (same) return;
+    this.watchAt = at ? at.clone() : null;
+    this.watchDetail = at ? detail : 0;
+    this.updateDesired(true);     // it is wanted now, not after the next 500 m
+  }
+
   /** Terrain altitude under `pos` (user space), or `undefined` if no tile covers it. */
   groundHeight(pos: THREE.Vector3): number | undefined {
     return groundHeight(this.grids, this.world, this.anchor, pos);
+  }
+
+  /**
+   * Is the ground in the way between `eye` and `at` (both user space)? See
+   * {@link sightBlocked}: the line between the two is walked and the terrain
+   * is asked for its height along it, so a hill or a ridge standing above the
+   * line closes the sight.
+   */
+  sightBlocked(eye: THREE.Vector3, at: THREE.Vector3, opts?: SightOptions): boolean {
+    return sightBlocked(this.grids, this.world, this.anchor, eye, at, opts);
   }
 
   /**
@@ -412,7 +451,11 @@ export class Terrain {
       thresholds: this.streaming.thresholds,
     };
     desiredTiles(opts, abs, this.scratch);
+    // …and the one fixed spot, if there is one. Its keys go in the same list
+    // and are keyed with the rest, so anything both want is asked for once.
+    if (this.watchAt) detailTiles(opts, this.watchAt, this.watchDetail, this.scratch);
     this.desired = new Map(this.scratch.map((k) => [keyId(k), k]));
+    if (this.watchAt) this.dropCoveredAncestors();
     this.coverageDirty = true;
 
     // cancel once, here — the desired set only changes in this method
@@ -421,6 +464,34 @@ export class Terrain {
     }
     for (const [id, key] of this.desired) {
       if (!this.resident.has(id) && !this.loading.has(id)) this.requestTile(key);
+    }
+  }
+
+  /**
+   * ONE CUT, NOT TWO.
+   *
+   * Each policy on its own returns a clean cut of the quadtree: one tile over
+   * every piece of ground and never two. Put two of them together — the
+   * camera's and the watched spot's — and that is no longer true where they
+   * meet: the camera may want one coarse tile over ground the spot has cut
+   * into sixteen, and both would be built, one drawn through the other.
+   *
+   * So any tile with a finer one underneath it is dropped. What is left is a
+   * single cut again, made of whichever policy asked for the finer ground —
+   * which is what both of them wanted anyway. It is safe because each cut is
+   * COMPLETE over the tiles it entered: whatever is dropped has its whole
+   * area covered by the finer tiles that displaced it.
+   */
+  private dropCoveredAncestors(): void {
+    const base = this.world.baseZoom;
+    for (const key of [...this.desired.values()]) {
+      let zoom = key.zoom - 1;
+      let x = key.x >> 1;      // floor-halving, negatives included
+      let z = key.z >> 1;
+      while (zoom >= base) {
+        this.desired.delete(keyId({ zoom, x, z }));
+        zoom -= 1; x >>= 1; z >>= 1;
+      }
     }
   }
 

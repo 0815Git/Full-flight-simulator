@@ -90,3 +90,63 @@ export function groundHeight(
   }
   return undefined;
 }
+
+/** How a {@link sightBlocked} walk is run. */
+export interface SightOptions {
+  /** How many places along the line are asked. More is finer and dearer;
+   *  192 over 30 km is a reading every 150 m. Default 192. */
+  steps?: number;
+  /** How far the ground must rise ABOVE the straight line before it counts
+   *  as being in the way, in meters. Far off, the resident tile is a coarse
+   *  one and a hilltop can read tens of meters out, so a little slack here
+   *  keeps a clear sight from blinking shut. Default 0. */
+  overBy?: number;
+  /** A stretch at the EYE end left out of the walk, in meters: flying low,
+   *  the ground a few paces ahead is always near the line and is never what
+   *  hides something 30 km off. Default 0. */
+  skipNear?: number;
+  /** A stretch at the FAR end left out of the walk, in meters. Default 0. */
+  skipFar?: number;
+}
+
+/**
+ * Is the ground in the way between `eye` and `at` (both user space)?
+ *
+ * The straight line between the two is walked, and at each place along it the
+ * terrain's own height is asked for and set against the height of the line
+ * there. Ground standing above the line means the one point cannot be seen
+ * from the other.
+ *
+ * Where NO tile covers a place, nothing is known about the ground there and
+ * it is taken as not being in the way — so a sight line does not close
+ * merely because the landscape it crosses has not been fetched yet.
+ */
+export function sightBlocked(
+  grids: HeightGrids,
+  world: WorldConfig,
+  anchor: TerrainAnchor,
+  eye: Vec3Like,
+  at: Vec3Like,
+  opts: SightOptions = {},
+): boolean {
+  const dx = at.x - eye.x;
+  const dy = at.y - eye.y;
+  const dz = at.z - eye.z;
+  const span = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  if (!(span > 0)) return false;
+  const steps = Math.max(1, Math.floor(opts.steps ?? 192));
+  const over = opts.overBy ?? 0;
+  const from = Math.min(0.5, Math.max(0, (opts.skipNear ?? 0) / span));
+  const to = Math.max(from, 1 - Math.min(0.5, Math.max(0, (opts.skipFar ?? 0) / span)));
+  const p = { x: 0, y: 0, z: 0 };
+  for (let i = 0; i <= steps; i++) {
+    const t = from + ((to - from) * i) / steps;
+    p.x = eye.x + dx * t;
+    p.y = eye.y + dy * t;
+    p.z = eye.z + dz * t;
+    const ground = groundHeight(grids, world, anchor, p);
+    if (ground === undefined) continue;
+    if (ground > p.y + over) return true;
+  }
+  return false;
+}
